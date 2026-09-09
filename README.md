@@ -10,7 +10,9 @@
 ```text
 PulseAudio 기본 마이크
         ↓
-10초 WAV 녹음 (16 kHz, mono, signed 16-bit PCM)
+WebRTC VAD 음성 시작/종료 감지
+        ↓
+발화 길이만 WAV 녹음 (16 kHz, mono, signed 16-bit PCM)
         ↓
 faster-whisper small (CPU, int8)
         ↓
@@ -38,6 +40,7 @@ JSON 로봇 명령
 ## 주요 파일
 
 - `voice_command_test.py`: 마이크 녹음, STT, 명령 분류를 연결한 통합 프로그램
+- `vad_test.py`: 반복 음성 시작/종료 감지를 확인하는 VAD 단독 테스트
 - `llm_test.py`: Ollama를 이용한 명령 분류 및 JSON 검증
 - `requirements.txt`: Python 패키지 의존성
 
@@ -90,25 +93,32 @@ Whisper `small` 모델은 첫 실행 시 다운로드될 수 있습니다.
 통합 음성 명령 테스트:
 
 ```bash
-./.venv/bin/python voice_command_test.py \
-  --output recordings/command.wav
+./.venv/bin/python voice_command_test.py
 ```
 
-프로그램에 다음 안내가 표시되면 바로 말합니다.
+Whisper 모델은 시작할 때 한 번만 로드됩니다. 다음 안내가 표시되면 말합니다.
 
 ```text
-[REC]
-지금부터 10초간 녹음합니다.
-지금 말씀해주세요.
+[LISTENING]
+말씀해주세요.
 ```
 
-기존 녹음 파일은 자동으로 덮어쓰지 않습니다. 반복 테스트에서는 새로운 파일명을
-지정하세요.
+프로그램은 음성을 자동 감지하고 발화 종료 후 STT와 LLM을 실행한 다음 다시
+`[LISTENING]`으로 돌아갑니다. Ctrl+C로 안전하게 종료할 수 있습니다.
+
+녹음은 `recordings/vad_command_*.wav`에 고유한 이름으로 저장되며 기존 파일을
+덮어쓰지 않습니다. 다른 저장 디렉터리는 다음과 같이 지정합니다.
 
 ```bash
 ./.venv/bin/python voice_command_test.py \
-  --output recordings/command-02.wav \
-  --expected-object tissue
+  --output-dir recordings
+```
+
+VAD만 반복 테스트하려면 다음 명령을 사용합니다. WAV, Whisper, LLM은 실행되지
+않습니다.
+
+```bash
+./.venv/bin/python vad_test.py
 ```
 
 LLM 분류만 테스트하려면 다음과 같이 실행합니다.
@@ -124,9 +134,29 @@ LLM 분류만 테스트하려면 다음과 같이 실행합니다.
 | 목마른데 마실 거 가져다줘 | 목마른 데 마실 거 가져다 줘 | `{"action":"fetch","object":"coke"}` | 성공 |
 | 뭐 흘렸는데 닦을 거 가져다줘 | 뭐 흘렸는데 닦을거 가져다줘 | `{"action":"fetch","object":"tissue"}` | 성공 |
 | 오늘 날씨 어때 | 오늘 날씨 어때? | `{"action":"unknown","object":"none"}` | 성공 |
+| 목마른데 … (0.3초 쉼) … 마실 거 가져다줘 | 목마린데 마실 거 가져다 줘 | `{"action":"fetch","object":"coke"}` | 성공 |
 
 Whisper 전사에 사소한 띄어쓰기 차이가 있어도 최종 명령의 의미가 맞으면 성공으로
 판정했습니다.
+
+## VAD 설정
+
+- WebRTC VAD mode: `3`
+- PCM frame: `30 ms` (`480 samples`, `960 bytes`)
+- Stream warm-up: `1.2초` 입력 폐기
+- Start window: 최근 `300 ms` 중 speech `80%` 이상
+- Start RMS gate: `200` (LISTENING 상태에만 적용)
+- Pre-roll: `450 ms`
+- End silence: `900 ms`
+- 최대 발화 길이: `15초`
+
+Stream warm-up은 이 장치에서 새 `parec` 연결 직후 관찰된 DC-offset 감쇠 신호가
+음성으로 오인되는 것을 막습니다. RMS gate는 음성 시작에만 적용되므로 작은 음절이
+발화 중간의 종료 판정에 영향을 주지 않습니다.
+
+WebRTC VAD는 화자 식별기가 아닙니다. 주변 사람이 말하면 정상적인 음성으로
+감지하므로 여러 사람이 대화하는 환경에서는 wake word 또는 별도의 화자 인식이
+추가로 필요할 수 있습니다.
 
 ## 오류 처리
 

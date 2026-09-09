@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record one voice command, transcribe it, and classify it locally."""
+"""Continuously detect, transcribe, and classify local voice commands."""
 
 from __future__ import annotations
 
@@ -7,34 +7,61 @@ import argparse
 import audioop
 import json
 import math
-import subprocess
 import sys
 import time
 import urllib.request
 import wave
+from collections import deque
 from pathlib import Path
+from typing import Any
 
+import webrtcvad
 from faster_whisper import WhisperModel
 
 from llm_test import MODEL as LLM_MODEL
 from llm_test import classify_command
+from vad_test import (
+    CHANNELS,
+    END_SILENCE_MS,
+    FRAME_BYTES,
+    FRAME_MS,
+    SAMPLE_RATE,
+    SAMPLE_WIDTH,
+    START_MIN_RMS,
+    STREAM_WARMUP_FRAMES,
+    STREAM_WARMUP_MS,
+    VAD_MODE,
+    VadState,
+    VadStateMachine,
+    get_default_source,
+    read_frame,
+    qualify_speech_for_state,
+    start_capture,
+    stop_capture,
+)
 
 
 WHISPER_MODEL = "small"
-SAMPLE_RATE = 16_000
-CHANNELS = 1
-SAMPLE_WIDTH = 2
-RECORD_SECONDS = 10
+PRE_ROLL_MS = 450
+PRE_ROLL_FRAMES = PRE_ROLL_MS // FRAME_MS
+MAX_UTTERANCE_SECONDS = 15
+MAX_UTTERANCE_FRAMES = MAX_UTTERANCE_SECONDS * 1_000 // FRAME_MS
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
 
 
 class PipelineError(RuntimeError):
-    """An expected integration-stage failure with user-facing context."""
+    """An expected integration failure with stage and debug context."""
 
     def __init__(self, stage: str, message: str, debug: str = "") -> None:
         super().__init__(message)
         self.stage = stage
         self.debug = debug
+
+
+def report_error(exc: PipelineError) -> None:
+    print(f"\n[ERROR]\n{exc.stage}: {exc}", file=sys.stderr)
+    if exc.debug:
+        print(f"[DEBUG]\n{exc.debug}", file=sys.stderr)
 
 
 def load_whisper_model() -> tuple[WhisperModel, float]:
@@ -72,111 +99,176 @@ def ensure_ollama_ready() -> None:
         )
 
 
-def get_default_source() -> str:
-    try:
-        completed = subprocess.run(
-            ["pactl", "get-default-source"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except FileNotFoundError as exc:
+def _is_speech(vad: webrtcvad.Vad, frame: bytes) -> bool:
+    if len(frame) != FRAME_BYTES:
         raise PipelineError(
-            "녹음 준비",
-            "pactl 실행 파일을 찾을 수 없습니다.",
+            "VAD",
+            "WebRTC VAD에 전달할 PCM frame 크기가 올바르지 않습니다.",
+            f"actual={len(frame)} expected={FRAME_BYTES}",
+        )
+    try:
+        return vad.is_speech(frame, SAMPLE_RATE)
+    except Exception as exc:
+        raise PipelineError(
+            "VAD",
+            "WebRTC VAD frame 판정에 실패했습니다.",
             f"{type(exc).__name__}: {exc}",
         ) from exc
-    except subprocess.CalledProcessError as exc:
+
+
+def discard_stream_warmup(process: Any) -> None:
+    """Consume the measured PulseAudio startup transient before listening."""
+    assert process.stdout is not None
+    for frame_index in range(STREAM_WARMUP_FRAMES):
+        frame = read_frame(process.stdout)
+        if frame is None:
+            raise PipelineError(
+                "녹음 준비",
+                "PulseAudio stream 안정화 중 PCM 입력이 종료됐습니다.",
+                f"warmup_frame={frame_index}/{STREAM_WARMUP_FRAMES}",
+            )
+
+
+def capture_utterance() -> tuple[bytes, dict[str, float | bool | str]]:
+    """Capture one VAD-delimited utterance from a fresh PulseAudio stream."""
+    try:
+        source = get_default_source()
+        process = start_capture(source)
+    except Exception as exc:
         raise PipelineError(
             "녹음 준비",
-            "PulseAudio default source를 확인할 수 없습니다.",
-            f"exit={exc.returncode}; stderr={exc.stderr.strip()}",
-        ) from exc
-
-    source = completed.stdout.strip()
-    if not source:
-        raise PipelineError("녹음 준비", "PulseAudio default source가 비어 있습니다.")
-    return source
-
-
-def _read_exact(stream: object, byte_count: int) -> bytes:
-    chunks: list[bytes] = []
-    remaining = byte_count
-    while remaining:
-        chunk = stream.read(remaining)  # type: ignore[attr-defined]
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
-
-
-def _stop_capture_process(process: subprocess.Popen[bytes]) -> str:
-    if process.poll() is None:
-        process.terminate()
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=2)
-    assert process.stderr is not None
-    return process.stderr.read().decode("utf-8", errors="replace").strip()
-
-
-def record_audio(output_path: Path) -> float:
-    output_path = output_path.resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        raise PipelineError(
-            "녹음",
-            f"기존 녹음 파일을 덮어쓰지 않습니다: {output_path}",
-        )
-
-    source = get_default_source()
-    command = [
-        "parec",
-        "--device",
-        source,
-        "--raw",
-        "--format=s16le",
-        f"--rate={SAMPLE_RATE}",
-        f"--channels={CHANNELS}",
-    ]
-    capture_bytes = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH * RECORD_SECONDS
-
-    print("[REC]", flush=True)
-    print("지금부터 10초간 녹음합니다.", flush=True)
-    print("지금 말씀해주세요.", flush=True)
-
-    started = time.perf_counter()
-    try:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0,
-        )
-    except FileNotFoundError as exc:
-        raise PipelineError(
-            "녹음 준비",
-            "parec 실행 파일을 찾을 수 없습니다.",
+            "PulseAudio 기본 마이크 stream을 시작할 수 없습니다.",
             f"{type(exc).__name__}: {exc}",
         ) from exc
+
+    try:
+        discard_stream_warmup(process)
+    except Exception:
+        stop_capture(process)
+        raise
+
+    vad = webrtcvad.Vad(VAD_MODE)
+    detector = VadStateMachine()
+    pre_roll: deque[bytes] = deque(maxlen=PRE_ROLL_FRAMES)
+    utterance_frames: list[bytes] = []
+    listening_started = time.perf_counter()
+    voice_started_wall: float | None = None
+    voice_start_audio = 0.0
 
     assert process.stdout is not None
-    assert process.stderr is not None
-    audio_data = _read_exact(process.stdout, capture_bytes)
-    stderr = _stop_capture_process(process)
-
-    if len(audio_data) != capture_bytes:
-        raise PipelineError(
-            "녹음",
-            "PulseAudio stream에서 10초 분량을 받지 못했습니다.",
-            f"captured={len(audio_data)}/{capture_bytes}; stderr={stderr}",
-        )
+    print("\n[LISTENING]", flush=True)
+    print("말씀해주세요.", flush=True)
 
     try:
-        with wave.open(str(output_path), "wb") as wav_file:
+        while True:
+            frame = read_frame(process.stdout)
+            if frame is None:
+                return_code = process.poll()
+                raise PipelineError(
+                    "녹음",
+                    "PulseAudio PCM stream이 예기치 않게 종료됐습니다.",
+                    f"parec exit={return_code}",
+                )
+
+            state_before = detector.state
+            if state_before is VadState.LISTENING:
+                pre_roll.append(frame)
+            else:
+                utterance_frames.append(frame)
+
+            vad_speech = _is_speech(vad, frame)
+            qualified_speech = qualify_speech_for_state(
+                detector.state, vad_speech, frame
+            )
+            transition = detector.process_frame(qualified_speech)
+            if transition is not None:
+                event, details = transition
+                if event == "start":
+                    utterance_frames = list(pre_roll)
+                    pre_roll.clear()
+                    voice_started_wall = time.perf_counter()
+                    voice_start_audio = float(details["audio_time"])
+                    print(
+                        f"\n[VOICE START] audio={voice_start_audio:.3f}s "
+                        f"speech={details['speech_frames']}/{details['window_frames']}",
+                        flush=True,
+                    )
+                else:
+                    voice_end_wall = time.perf_counter()
+                    audio_end = float(details["audio_time"])
+                    print(
+                        f"[VOICE END] audio={audio_end:.3f}s "
+                        f"silence={details['silence_seconds']:.3f}s",
+                        flush=True,
+                    )
+                    assert voice_started_wall is not None
+                    return b"".join(utterance_frames), {
+                        "source": source,
+                        "listening_seconds": voice_started_wall - listening_started,
+                        "voice_start_audio": voice_start_audio,
+                        "voice_end_audio": audio_end,
+                        "vad_end_silence_seconds": float(details["silence_seconds"]),
+                        "utterance_seconds": len(utterance_frames) * FRAME_MS / 1_000.0,
+                        "capture_wall_seconds": voice_end_wall - voice_started_wall,
+                        "voice_end_wall": voice_end_wall,
+                        "max_duration_reached": False,
+                    }
+
+            if (
+                detector.state is VadState.SPEAKING
+                and len(utterance_frames) >= MAX_UTTERANCE_FRAMES
+            ):
+                voice_end_wall = time.perf_counter()
+                audio_end = detector.audio_time
+                detector.reset_to_listening()
+                print(
+                    f"[VOICE END] audio={audio_end:.3f}s "
+                    f"limit={MAX_UTTERANCE_SECONDS}s",
+                    flush=True,
+                )
+                assert voice_started_wall is not None
+                return b"".join(utterance_frames), {
+                    "source": source,
+                    "listening_seconds": voice_started_wall - listening_started,
+                    "voice_start_audio": voice_start_audio,
+                    "voice_end_audio": audio_end,
+                    "vad_end_silence_seconds": 0.0,
+                    "utterance_seconds": len(utterance_frames) * FRAME_MS / 1_000.0,
+                    "capture_wall_seconds": voice_end_wall - voice_started_wall,
+                    "voice_end_wall": voice_end_wall,
+                    "max_duration_reached": True,
+                }
+    finally:
+        stop_capture(process)
+
+
+def next_recording_path(output_dir: Path, command_index: int) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    candidate = output_dir / f"vad_command_{stamp}_{command_index:03d}.wav"
+    suffix = 1
+    while candidate.exists():
+        candidate = output_dir / (
+            f"vad_command_{stamp}_{command_index:03d}_{suffix:02d}.wav"
+        )
+        suffix += 1
+    return candidate.resolve()
+
+
+def save_wav(audio_path: Path, audio_data: bytes) -> None:
+    if not audio_data:
+        raise PipelineError("녹음 저장", "저장할 발화 PCM 데이터가 없습니다.")
+    if len(audio_data) % FRAME_BYTES:
+        raise PipelineError(
+            "녹음 저장",
+            "발화 PCM 데이터가 완전한 VAD frame으로 구성되지 않았습니다.",
+            f"bytes={len(audio_data)} frame_bytes={FRAME_BYTES}",
+        )
+    if audio_path.exists():
+        raise PipelineError("녹음 저장", f"기존 파일을 덮어쓰지 않습니다: {audio_path}")
+
+    try:
+        with wave.open(str(audio_path), "wb") as wav_file:
             wav_file.setnchannels(CHANNELS)
             wav_file.setsampwidth(SAMPLE_WIDTH)
             wav_file.setframerate(SAMPLE_RATE)
@@ -184,21 +276,9 @@ def record_audio(output_path: Path) -> float:
     except (OSError, wave.Error) as exc:
         raise PipelineError(
             "녹음 저장",
-            "WAV 파일을 저장할 수 없습니다.",
+            "VAD 발화 WAV를 저장할 수 없습니다.",
             f"{type(exc).__name__}: {exc}",
         ) from exc
-
-    record_seconds = time.perf_counter() - started
-
-    if not output_path.is_file() or output_path.stat().st_size <= 44:
-        raise PipelineError(
-            "녹음",
-            "WAV 파일이 생성되지 않았거나 유효한 오디오 데이터가 없습니다.",
-            stderr,
-        )
-    print("[REC]", flush=True)
-    print("녹음 완료", flush=True)
-    return record_seconds
 
 
 def inspect_audio(audio_path: Path) -> dict[str, float | int | bool]:
@@ -232,6 +312,7 @@ def inspect_audio(audio_path: Path) -> dict[str, float | int | bool]:
         "silent": peak == 0,
     }
     print("\n[AUDIO]")
+    print(f"FILE: {audio_path}")
     print(f"DURATION: {result['duration_seconds']:.3f} sec")
     print(f"SAMPLE_RATE: {sample_rate} Hz")
     print(f"CHANNELS: {channels}")
@@ -248,8 +329,7 @@ def transcribe_audio(model: WhisperModel, audio_path: Path) -> tuple[str, float]
     started = time.perf_counter()
     try:
         segment_iter, _ = model.transcribe(str(audio_path), language="ko")
-        segments = list(segment_iter)
-        text = "".join(segment.text for segment in segments).strip()
+        text = "".join(segment.text for segment in segment_iter).strip()
     except Exception as exc:
         raise PipelineError(
             "STT",
@@ -257,7 +337,6 @@ def transcribe_audio(model: WhisperModel, audio_path: Path) -> tuple[str, float]
             f"{type(exc).__name__}: {exc}",
         ) from exc
     stt_seconds = time.perf_counter() - started
-
     if not text:
         raise PipelineError("STT", "Whisper 전사 결과가 비어 있습니다.")
     return text, stt_seconds
@@ -277,83 +356,99 @@ def classify_text(text: str) -> tuple[dict[str, str], float]:
 
 
 class VoiceCommandPipeline:
-    """Reusable single-process STT and command-classification pipeline."""
+    """Reuse one Whisper model while processing repeated VAD utterances."""
 
-    def __init__(self) -> None:
+    def __init__(self, output_dir: Path) -> None:
+        self.output_dir = output_dir.resolve()
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.whisper_model, self.model_load_seconds = load_whisper_model()
         ensure_ollama_ready()
+        print("[READY]")
+        print(f"WHISPER_MODEL_LOAD: {self.model_load_seconds:.3f} sec")
+        print(f"OLLAMA_MODEL: {LLM_MODEL}")
 
-    def run_once(
-        self, output_path: Path, expected_object: str | None = None
-    ) -> dict[str, object]:
-        started = time.perf_counter()
-        record_seconds = record_audio(output_path)
-        audio_status = inspect_audio(output_path)
-        text, stt_seconds = transcribe_audio(self.whisper_model, output_path)
-        command, llm_seconds = classify_text(text)
-        total_seconds = time.perf_counter() - started
+    def run_once(self, command_index: int) -> dict[str, Any]:
+        audio_data, capture = capture_utterance()
+        audio_path = next_recording_path(self.output_dir, command_index)
+        save_wav(audio_path, audio_data)
+        audio_status = inspect_audio(audio_path)
 
+        text, stt_seconds = transcribe_audio(self.whisper_model, audio_path)
         print("\n[STT]")
         print(text)
+
+        command, llm_seconds = classify_text(text)
+        command_done = time.perf_counter()
         print("\n[COMMAND]")
         print(json.dumps(command, ensure_ascii=False, separators=(",", ":")))
+
+        voice_end_to_command = command_done - float(capture["voice_end_wall"])
         print("\n[TIME]")
-        print(f"WHISPER_MODEL_LOAD: {self.model_load_seconds:.3f} sec")
-        print(f"RECORD: {record_seconds:.3f} sec")
+        print(f"UTTERANCE_WAV: {capture['utterance_seconds']:.3f} sec")
+        print(f"VAD_END_SILENCE: {capture['vad_end_silence_seconds']:.3f} sec")
         print(f"STT: {stt_seconds:.3f} sec")
         print(f"LLM: {llm_seconds:.3f} sec")
-        print(f"TOTAL: {total_seconds:.3f} sec")
-
-        success = expected_object is None or command["object"] == expected_object
-        if expected_object is not None:
-            print("\n[VERIFY]")
-            print(f"EXPECTED_OBJECT: {expected_object}")
-            print(f"RESULT: {'SUCCESS' if success else 'FAILURE'}")
+        print(f"VOICE_END_TO_COMMAND: {voice_end_to_command:.3f} sec")
 
         return {
-            "audio_path": str(output_path.resolve()),
+            "audio_path": str(audio_path),
+            "audio_status": audio_status,
+            "capture": capture,
             "transcript": text,
             "command": command,
-            "expected_object": expected_object,
-            "success": success,
-            "model_load_seconds": self.model_load_seconds,
-            "record_seconds": record_seconds,
-            "audio_status": audio_status,
             "stt_seconds": stt_seconds,
             "llm_seconds": llm_seconds,
-            "total_seconds": total_seconds,
+            "voice_end_to_command_seconds": voice_end_to_command,
         }
+
+    def run_forever(self, max_commands: int | None = None) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        command_index = 1
+        while max_commands is None or command_index <= max_commands:
+            try:
+                result = self.run_once(command_index)
+            except PipelineError as exc:
+                if exc.stage in {"녹음 준비", "녹음", "녹음 저장", "VAD"}:
+                    raise
+                report_error(exc)
+                print("\n[LISTENING 재시작]", flush=True)
+                continue
+            results.append(result)
+            command_index += 1
+        return results
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--output",
+        "--output-dir",
         type=Path,
-        default=Path("recordings/command.wav"),
-        help="New WAV path; an existing file is never overwritten",
+        default=Path("recordings"),
+        help="Directory for uniquely named VAD utterance WAV files",
     )
     parser.add_argument(
-        "--expected-object",
-        choices=("coke", "tissue", "none"),
-        help="Optional expected object for this test",
+        "--max-commands",
+        type=int,
+        help="Stop after this many successful commands; default is Ctrl+C",
     )
     args = parser.parse_args()
+    if args.max_commands is not None and args.max_commands < 1:
+        parser.error("--max-commands must be at least 1")
 
     try:
-        pipeline = VoiceCommandPipeline()
-        result = pipeline.run_once(args.output, args.expected_object)
+        pipeline = VoiceCommandPipeline(args.output_dir)
+        pipeline.run_forever(args.max_commands)
+    except KeyboardInterrupt:
+        print("\nVoice command test 종료", flush=True)
+        return 0
     except PipelineError as exc:
-        print(f"\n[ERROR]\n{exc.stage}: {exc}", file=sys.stderr)
-        if exc.debug:
-            print(f"[DEBUG]\n{exc.debug}", file=sys.stderr)
+        report_error(exc)
         return 1
     except Exception as exc:
         print("\n[ERROR]\n예상하지 못한 통합 프로그램 오류가 발생했습니다.", file=sys.stderr)
         print(f"[DEBUG]\n{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-
-    return 0 if result["success"] else 2
+    return 0
 
 
 if __name__ == "__main__":
