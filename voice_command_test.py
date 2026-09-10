@@ -13,7 +13,7 @@ import urllib.request
 import wave
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import webrtcvad
 from faster_whisper import WhisperModel
@@ -47,6 +47,12 @@ PRE_ROLL_FRAMES = PRE_ROLL_MS // FRAME_MS
 MAX_UTTERANCE_SECONDS = 15
 MAX_UTTERANCE_FRAMES = MAX_UTTERANCE_SECONDS * 1_000 // FRAME_MS
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
+
+
+class CommandPublisher(Protocol):
+    def publish_command(self, command: Any) -> bool: ...
+
+    def close(self) -> None: ...
 
 
 class PipelineError(RuntimeError):
@@ -358,8 +364,13 @@ def classify_text(text: str) -> tuple[dict[str, str], float]:
 class VoiceCommandPipeline:
     """Reuse one Whisper model while processing repeated VAD utterances."""
 
-    def __init__(self, output_dir: Path) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        command_publisher: CommandPublisher | None = None,
+    ) -> None:
         self.output_dir = output_dir.resolve()
+        self.command_publisher = command_publisher
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.whisper_model, self.model_load_seconds = load_whisper_model()
         ensure_ollama_ready()
@@ -382,6 +393,12 @@ class VoiceCommandPipeline:
         print("\n[COMMAND]")
         print(json.dumps(command, ensure_ascii=False, separators=(",", ":")))
 
+        ros_published = False
+        if self.command_publisher is not None:
+            ros_published = self.command_publisher.publish_command(command)
+            print("\n[ROS]")
+            print("published /robot_command" if ros_published else "skipped")
+
         voice_end_to_command = command_done - float(capture["voice_end_wall"])
         print("\n[TIME]")
         print(f"UTTERANCE_WAV: {capture['utterance_seconds']:.3f} sec")
@@ -396,6 +413,7 @@ class VoiceCommandPipeline:
             "capture": capture,
             "transcript": text,
             "command": command,
+            "ros_published": ros_published,
             "stt_seconds": stt_seconds,
             "llm_seconds": llm_seconds,
             "voice_end_to_command_seconds": voice_end_to_command,
@@ -431,12 +449,28 @@ def main() -> int:
         type=int,
         help="Stop after this many successful commands; default is Ctrl+C",
     )
+    parser.add_argument(
+        "--ros",
+        action="store_true",
+        help="Publish validated fetch commands to ROS2 /robot_command",
+    )
     args = parser.parse_args()
     if args.max_commands is not None and args.max_commands < 1:
         parser.error("--max-commands must be at least 1")
 
+    command_publisher: CommandPublisher | None = None
     try:
-        pipeline = VoiceCommandPipeline(args.output_dir)
+        if args.ros:
+            try:
+                from robot_command_publisher import RobotCommandPublisher
+            except ImportError as exc:
+                raise PipelineError(
+                    "ROS2 준비",
+                    "ROS2 Python 환경을 불러올 수 없습니다. ROS2 setup을 source했는지 확인하세요.",
+                    f"{type(exc).__name__}: {exc}",
+                ) from exc
+            command_publisher = RobotCommandPublisher("voice_command_publisher")
+        pipeline = VoiceCommandPipeline(args.output_dir, command_publisher)
         pipeline.run_forever(args.max_commands)
     except KeyboardInterrupt:
         print("\nVoice command test 종료", flush=True)
@@ -448,6 +482,9 @@ def main() -> int:
         print("\n[ERROR]\n예상하지 못한 통합 프로그램 오류가 발생했습니다.", file=sys.stderr)
         print(f"[DEBUG]\n{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if command_publisher is not None:
+            command_publisher.close()
     return 0
 
 
