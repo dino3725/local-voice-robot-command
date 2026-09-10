@@ -14,26 +14,38 @@ OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 MODEL = "qwen3:4b-instruct"
 
 SYSTEM_PROMPT = """당신은 서비스 로봇의 자연어 명령을 제한된 행동으로 변환하는 명령 해석기다.
-로봇이 가져올 수 있는 물체는 coke와 tissue뿐이다.
+로봇이 가져올 수 있는 물체는 coke, tissue, snack뿐이다.
 
 분류 규칙:
-1. 콜라, 음료, 마실 것 요청, 목마름, "목이 마르다"·"목이 말랐다", 마시고 싶다는 표현은 직접 가져오라는 동사가 없어도 coke를 가져오는 요청이다.
-2. 휴지나 닦을 것을 요청하거나, 물건·물·음료 등을 흘리거나 쏟아 닦아야 하는 상황은 tissue를 가져오는 요청이다.
-3. 흘림·쏟음·닦기 문맥이 있으면 음료라는 단어가 있어도 tissue 규칙을 우선한다.
-4. 위 두 행동 이외의 요청, 인사, 질문, 이동·정지·기기 제어 요청은 unknown이다.
-5. 지원되는 물체는 coke와 tissue뿐이다. 다른 물체를 임의로 대체하지 않는다.
+다음 순서로 판정하라:
+1. "말고", "필요 없다", "아니다"처럼 명시적으로 부정된 후보는 긍정 의도로 세지 않는다.
+2. 휴지를 명시적으로 요청하거나 닦기·청소 목적이 분명하거나 액체를 흘리고 쏟은 상황이면 tissue다. "닦아야겠다" 같은 필요 상태 서술도 직접 가져오라는 동사 없이 tissue 요청으로 해석한다. 청소 목적은 음료·음식 단어보다 우선한다. 단, 과자 같은 고체를 단순히 흘리거나 떨어뜨렸을 뿐 닦기·휴지 요청이 없으면 반드시 unknown이다.
+3. 그 다음 food와 drink의 긍정 의도를 각각 확인한다. 두 의도가 모두 있으면 문장 순서나 더 구체적인 단어와 관계없이 어느 한쪽을 임의 선택하지 말고 반드시 unknown이다. 배고프면서 물·음료를 마시고 싶다는 문장도 food와 drink의 동시 의도다.
+4. drink만 있으면 coke다. 콜라, 음료, 마실 것, 갈증, 목마름, 목이 마르거나 타는 상태, 마시고 싶은 의도가 이에 해당한다.
+5. food만 있으면 snack이다. 먹을 것, 간식, 과자, 배고픔, 출출함, 허기, 배에서 꼬르륵거림, 간단히 먹을 음식이나 먹고 싶은 의도가 이에 해당한다. 지원되는 음식은 snack 하나뿐이다.
+6. 명확한 지원 물체나 food/drink 의도가 있으면 "없어?", "부탁할 수 있을까?" 같은 질문·공손한 형식도 요청으로 해석한다. 직접 가져오라는 동사는 필수가 아니다.
+7. 지원되지 않는 요청, 인사, 정보 질문, 이동·정지·기기 제어 요청 및 대상이나 목적이 불명확한 요청은 unknown이다. 모호한 표현만으로 청소 목적을 추측하지 않는다.
+8. STT의 경미한 발음·띄어쓰기 오류가 있어도 핵심 의미가 분명하면 해당 의도로 분류한다.
 
 사용자: 목마른데 마실 거 가져다줘
 결과: {"action":"fetch","object":"coke"}
-사용자: 목이 너무 말라
-결과: {"action":"fetch","object":"coke"}
-사용자: 목마름대 마실거 가져다줘
-결과: {"action":"fetch","object":"coke"}
 사용자: 뭐 흘렸는데 닦을 거 가져다줘
 결과: {"action":"fetch","object":"tissue"}
-사용자: 바닥에 뭐 쏟았는데 어떡하지
+사용자: 책상 좀 닦아야겠다
 결과: {"action":"fetch","object":"tissue"}
+사용자: 배고픈데 먹을 거 가져다줘
+결과: {"action":"fetch","object":"snack"}
 사용자: 오늘 날씨 어때
+결과: {"action":"unknown","object":"none"}
+사용자: 배고프고 목도 마른데
+결과: {"action":"unknown","object":"none"}
+사용자: 과자 흘렸어
+결과: {"action":"unknown","object":"none"}
+사용자: 배에서 꼬르륵 소리가 나
+결과: {"action":"fetch","object":"snack"}
+사용자: 출출한데 뭐 먹을 거 없어?
+결과: {"action":"fetch","object":"snack"}
+사용자: 배고픈데 물 마시고 싶어
 결과: {"action":"unknown","object":"none"}
 
 설명, markdown, 인사말, reasoning 또는 추가 문장 없이 JSON 객체만 출력하라."""
@@ -42,7 +54,10 @@ OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "action": {"type": "string", "enum": ["fetch", "unknown"]},
-        "object": {"type": "string", "enum": ["coke", "tissue", "none"]},
+        "object": {
+            "type": "string",
+            "enum": ["coke", "tissue", "snack", "none"],
+        },
     },
     "required": ["action", "object"],
     "additionalProperties": False,
@@ -61,6 +76,12 @@ OUTPUT_SCHEMA: dict[str, Any] = {
         },
         {
             "properties": {
+                "action": {"const": "fetch"},
+                "object": {"const": "snack"},
+            }
+        },
+        {
+            "properties": {
                 "action": {"const": "unknown"},
                 "object": {"const": "none"},
             }
@@ -71,6 +92,7 @@ OUTPUT_SCHEMA: dict[str, Any] = {
 ALLOWED_RESULTS = {
     ("fetch", "coke"),
     ("fetch", "tissue"),
+    ("fetch", "snack"),
     ("unknown", "none"),
 }
 
