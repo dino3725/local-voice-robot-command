@@ -182,5 +182,142 @@ WebRTC VAD는 화자 식별기가 아닙니다. 주변 사람이 말하면 정�
 
 ## 현재 범위
 
-현재 버전은 로컬 음성 명령 분류까지만 구현합니다. ROS2 publisher, Jetson,
-TurtleBot, Nav2 및 OpenManipulator 제어는 아직 포함하지 않습니다.
+현재까지 다음 기능을 개별적으로 구현 및 테스트했습니다.
+
+- 로컬 마이크 기반 한국어 음성 명령 인식
+- Whisper 기반 STT
+- LLM 기반 제한된 JSON 로봇 명령 생성
+- YOLO11 기반 `coke`, `tissue`, `airpod`, `vaseline` 객체 검출
+- Intel RealSense RGB 영상 기반 실시간 Bounding Box 검출
+
+현재 음성 명령 시스템과 객체 인식 시스템은 각각 독립적으로 검증한 상태입니다.
+
+다음 단계에서는 두 시스템을 ROS2로 연결하여,
+
+```text
+음성 명령
+    ↓
+요청 물체 결정
+    ↓
+YOLO 객체 탐지
+    ↓
+RealSense Depth를 이용한 물체 위치 계산
+    ↓
+TurtleBot3 이동
+    ↓
+OpenManipulator Pick & Place
+```
+
+형태의 서비스 로봇 파이프라인으로 확장할 예정입니다.
+
+## YOLO 기반 객체 인식
+
+음성 명령으로 지정된 물체를 실제 카메라 영상에서 찾기 위해 YOLO11 기반 객체 인식 모델을 학습했습니다.
+
+현재 하나의 모델에서 다음 4개 클래스를 탐지할 수 있습니다.
+
+```text
+coke
+tissue
+airpod
+vaseline
+```
+
+### 데이터셋 구성
+
+Roboflow에서 Object Detection 데이터셋을 구성하고 YOLO11 형식으로 변환하여 학습에 사용했습니다.
+
+최종 데이터셋은 다음과 같이 구성했습니다.
+
+- Train: 학습 데이터
+- Validation: 학습 중 성능 확인
+- Test: 최종 성능 평가
+- Classes: `coke`, `tissue`, `airpod`, `vaseline`
+
+모델 학습과 최종 평가는 서로 분리된 Validation/Test 데이터셋을 이용했습니다.
+
+### 학습 환경
+
+- Ubuntu 22.04
+- NVIDIA GeForce RTX 5060 Ti 8GB
+- Python 3.11.16
+- PyTorch 2.11.0 + CUDA 12.8
+- Ultralytics 8.4.152
+- Model: YOLO11n
+- Input Size: 640 × 640
+- Epochs: 100
+- Batch Size: 16
+
+학습 명령:
+
+```bash
+yolo detect train \
+  model=yolo11n.pt \
+  data=$HOME/yolo_ws/datasets/coke_tissue_airpod_vaseline/data.yaml \
+  epochs=100 \
+  imgsz=640 \
+  batch=16 \
+  device=0 \
+  patience=20 \
+  project=$HOME/yolo_ws/runs \
+  name=coke_tissue_airpod_vaseline
+```
+
+학습 완료 후 가장 성능이 좋았던 weight는 다음 위치에 생성됩니다.
+
+```text
+~/yolo_ws/runs/coke_tissue_airpod_vaseline/weights/best.pt
+```
+
+### Test 결과
+
+학습에 사용하지 않은 Test 데이터 151장을 이용하여 최종 모델을 평가했습니다.
+
+| Class | Precision | Recall | mAP50 | mAP50-95 |
+| --- | ---: | ---: | ---: | ---: |
+| All | 0.952 | 0.924 | 0.949 | 0.823 |
+| airpod | 0.959 | 1.000 | 0.995 | 0.796 |
+| coke | 0.965 | 0.839 | 0.951 | 0.822 |
+| tissue | 0.998 | 1.000 | 0.995 | 0.938 |
+| vaseline | 0.884 | 0.857 | 0.855 | 0.734 |
+
+전체 Test 데이터 기준 `mAP50 = 0.949`, `mAP50-95 = 0.823`을 확인했습니다.
+
+`tissue`와 `airpod`은 높은 검출 성능을 보였으며, `coke`와 `vaseline`은 일부 환경에서 미검출 또는 클래스 혼동이 발생할 수 있습니다.
+
+### Bounding Box 검출
+
+학습된 `best.pt`를 이용하면 카메라 영상에서 물체의 클래스, confidence score, bounding box를 실시간으로 확인할 수 있습니다.
+
+Intel RealSense RGB 카메라 테스트에서는 다음과 같이 실행했습니다.
+
+```bash
+yolo detect predict \
+  model=$HOME/yolo_ws/runs/coke_tissue_airpod_vaseline/weights/best.pt \
+  source=4 \
+  conf=0.25 \
+  show=True \
+  device=0
+```
+
+현재는 다음 형태의 검출 결과를 얻을 수 있습니다.
+
+```text
+[coke      confidence + bounding box]
+[tissue    confidence + bounding box]
+[airpod    confidence + bounding box]
+[vaseline  confidence + bounding box]
+```
+
+### 현재 확인된 문제
+
+실제 카메라 환경에서 비슷한 형태의 물체 사이에 일부 class confusion이 확인되었습니다.
+
+예를 들어 다음과 같은 경우가 있습니다.
+
+- `airpod`을 `tissue`로 판단
+- `vaseline`을 `airpod`으로 판단
+
+추후 실제 로봇 카메라에서 촬영한 실패 사례를 데이터셋에 추가하고 fine-tuning하여 실제 환경에서의 분류 성능을 개선할 예정입니다.
+
+최종적으로는 객체의 Bounding Box뿐만 아니라 RealSense Depth 정보를 이용해 객체의 거리 또는 3차원 위치를 계산하고, TurtleBot3 OpenManipulator의 Pick & Place 동작과 연결하는 것을 목표로 합니다.
