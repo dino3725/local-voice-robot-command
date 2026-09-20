@@ -14,16 +14,20 @@ from std_msgs.msg import String
 from robot_command_publisher import RobotCommandPublisher, TOPIC_NAME
 
 
-FETCH_COMMANDS = [
+PUBLISHABLE_COMMANDS = [
     {"action": "fetch", "object": "coke"},
+    {"action": "fetch", "object": "vaseline"},
     {"action": "fetch", "object": "tissue"},
-    {"action": "fetch", "object": "snack"},
+    {"action": "fetch", "object": "airpod"},
+    {"action": "stop", "object": "none"},
 ]
 BLOCKED_COMMANDS = [
     {"action": "unknown", "object": "none"},
     {"action": "fetch", "object": "water"},
+    {"action": "fetch", "object": "snack"},
     {"action": "move", "object": "coke"},
     {"action": "fetch", "object": "none"},
+    {"action": "stop", "object": "coke"},
     "not a command",
 ]
 
@@ -64,21 +68,22 @@ def main() -> int:
                 raise RuntimeError("local subscriber discovery timed out")
 
             decisions: list[bool] = []
-            for command in FETCH_COMMANDS + BLOCKED_COMMANDS:
+            for command in PUBLISHABLE_COMMANDS + BLOCKED_COMMANDS:
                 decisions.append(publisher.publish_command(command))
-            delivered = spin_until(executor, lambda: len(received) >= 3, 5.0)
+            delivered = spin_until(executor, lambda: len(received) >= 5, 5.0)
             if not delivered:
-                raise RuntimeError(f"expected 3 messages, received {len(received)}")
+                raise RuntimeError(f"expected 5 messages, received {len(received)}")
 
             parsed = [json.loads(payload) for payload in received]
-            expected = FETCH_COMMANDS
+            expected = PUBLISHABLE_COMMANDS
             if parsed != expected:
                 raise RuntimeError(f"payload mismatch: {parsed!r}")
-            if decisions != [True, True, True, False, False, False, False, False]:
+            expected_decisions = [True] * len(PUBLISHABLE_COMMANDS) + [False] * len(BLOCKED_COMMANDS)
+            if decisions != expected_decisions:
                 raise RuntimeError(f"safety filter mismatch: {decisions!r}")
 
-            for command, payload in zip(FETCH_COMMANDS, received, strict=True):
-                print(f"PUBLISHED {command['object']}: {payload}")
+            for command, payload in zip(PUBLISHABLE_COMMANDS, received, strict=True):
+                print(f"PUBLISHED {command['action']}/{command['object']}: {payload}")
             print(f"UNKNOWN_AND_INVALID_BLOCKED: {len(BLOCKED_COMMANDS)}/{len(BLOCKED_COMMANDS)}")
             print(f"RECEIVED_COUNT: {len(received)}")
             print("RESULT: PASS", flush=True)

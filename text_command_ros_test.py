@@ -16,8 +16,10 @@ from robot_command_publisher import RobotCommandPublisher, TOPIC_NAME
 
 CASES = [
     ("목마른데 마실 거 가져다줘", {"action": "fetch", "object": "coke"}, True),
+    ("입술이 터서 바를 게 필요해", {"action": "fetch", "object": "vaseline"}, True),
     ("뭐 흘렸는데 닦을 거 가져다줘", {"action": "fetch", "object": "tissue"}, True),
-    ("배고파", {"action": "fetch", "object": "snack"}, True),
+    ("음악 들을 때 쓸 무선 이어폰 가져다줘", {"action": "fetch", "object": "airpod"}, True),
+    ("로봇 당장 멈춰", {"action": "stop", "object": "none"}, True),
     ("오늘 날씨 어때", {"action": "unknown", "object": "none"}, False),
 ]
 
@@ -71,11 +73,11 @@ def main() -> int:
                         json.dumps(command, ensure_ascii=False, separators=(",", ":"))
                     )
 
-            if not spin_until(executor, lambda: len(received) >= 3, 5.0):
-                raise RuntimeError(f"expected 3 ROS messages, received {len(received)}")
+            if not spin_until(executor, lambda: len(received) >= 5, 5.0):
+                raise RuntimeError(f"expected 5 ROS messages, received {len(received)}")
             if received != expected_payloads:
                 raise RuntimeError(f"subscriber payload mismatch: {received!r}")
-            print(f"\n[SUBSCRIBER]\nreceived={len(received)} expected=3")
+            print(f"\n[SUBSCRIBER]\nreceived={len(received)} expected=5")
             print("RESULT: PASS")
         finally:
             executor.remove_node(subscriber)

@@ -13,16 +13,21 @@ from std_msgs.msg import String
 
 
 TOPIC_NAME = "/robot_command"
-VALID_OBJECTS = frozenset({"coke", "tissue", "snack"})
+VALID_OBJECTS = frozenset({"coke", "vaseline", "tissue", "airpod"})
 
 
 def command_payload(command: Any) -> str | None:
-    """Return canonical JSON only for an allowed fetch command."""
+    """Return canonical JSON only for an allowed fetch or stop command."""
     if not isinstance(command, dict) or set(command) != {"action", "object"}:
         return None
-    if command.get("action") != "fetch" or command.get("object") not in VALID_OBJECTS:
+    action = command.get("action")
+    obj = command.get("object")
+    if action == "stop" and obj == "none":
+        canonical = {"action": "stop", "object": "none"}
+    elif action == "fetch" and obj in VALID_OBJECTS:
+        canonical = {"action": "fetch", "object": obj}
+    else:
         return None
-    canonical = {"action": "fetch", "object": command["object"]}
     return json.dumps(canonical, ensure_ascii=False, separators=(",", ":"))
 
 

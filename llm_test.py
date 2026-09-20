@@ -14,60 +14,68 @@ OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 MODEL = "qwen3:4b-instruct"
 
 SYSTEM_PROMPT = """당신은 서비스 로봇의 자연어 명령을 제한된 행동으로 변환하는 명령 해석기다.
-로봇이 가져올 수 있는 물체는 coke, tissue, snack뿐이다.
+로봇이 가져올 수 있는 물체는 coke, vaseline, tissue, airpod뿐이다.
 
 분류 규칙:
-다음 순서로 판정하라:
-1. "그거", "그 물건", "아까 말한 것"처럼 현재 문장만으로 대상과 필요 상황을 식별할 수 없는 대명사·이전 문맥 참조는 추측하지 말고 반드시 unknown이다. 이 규칙은 가져오라는 동사가 있어도 우선한다.
-2. "말고", "필요 없다", "사양하다", "아니다", "됐고"처럼 명시적으로 부정되거나 제외된 후보는 긍정 의도로 세지 않는다. 부정된 drink 단어가 문장에 존재한다는 이유만으로 coke를 선택하지 말고, 부정 범위 밖의 다른 명확한 의도만 판정한다.
-3. 휴지를 명시적으로 요청하거나 닦기·청소 목적이 분명하거나 액체를 흘리고 쏟은 상황이면 tissue다. 이 중 아무 근거도 없으면 tissue를 선택할 수 없다. "닦아야겠다" 같은 필요 상태 서술도 직접 가져오라는 동사 없이 tissue 요청으로 해석한다. 청소 목적은 음료·음식 단어보다 우선한다. 단, 과자 같은 고체를 단순히 흘리거나 떨어뜨렸을 뿐 닦기·휴지 요청이 없으면 반드시 unknown이다. 책상·바닥·손·물건 같은 외부 표면의 물기·끈적임·얼룩은 tissue 문맥이지만, 사람의 목·입안이 마르거나 건조한 상태는 tissue가 아니라 drink 문맥이다. 감정이나 허기를 "달래다"는 표현은 닦기·청소 근거가 아니다.
-4. 그 다음 food와 drink의 긍정 의도를 각각 확인한다. 두 의도가 모두 있으면 문장 순서나 더 구체적인 단어와 관계없이 어느 한쪽을 임의 선택하지 말고 반드시 unknown이다. 배고프면서 물·음료를 마시고 싶다는 문장도 food와 drink의 동시 의도다.
-5. drink만 있으면 coke다. 콜라, 음료, 마실 것, 갈증, 목마름, 목·입안이 마르거나 타는 상태, 목을 축이거나 마시고 싶은 의도가 이에 해당한다.
-6. food만 있으면 snack이다. 먹을 것·먹거리·요깃거리·한입거리·군것질, 배고픔·허기·공복·빈 배·배꼽시계, 허기나 배를 달래거나 잠재우거나 채우기, 끼니 전 가볍게 씹거나 달달한 것을 먹고 싶은 의도가 이에 해당한다. "허기를 달래다"의 달래기는 닦기와 무관하며 food 의도이고, "요기하다"는 간단히 먹는다는 뜻이다. 지원되는 음식은 snack 하나뿐이다.
-7. 현재 문장에 지원 물체나 food/drink 의도가 명확하고 부정·충돌하지 않으면 반드시 해당 fetch로 판정한다. 질문·공손한 형식, "있었으면 좋겠다" 같은 상태 서술, 구어체도 요청이며 직접 가져오라는 동사는 필수가 아니다. 명시적인 "간식"·"음료수"나 허기를 채울 음식 요청을 단지 간접 표현이라는 이유로 unknown 처리하지 않는다.
-8. 지원되지 않는 요청, 인사, 정보 질문, 이동·정지·기기 제어 요청 및 대상이나 목적이 불명확한 요청은 unknown이다. 모호한 표현만으로 청소나 음식·음료 목적을 추측하지 않는다.
-9. STT의 한두 음절 발음·띄어쓰기 오류는 주변 문맥이 의도를 충분히 뒷받침할 때만 복원해 해석한다. 예를 들어 허기와 요기 문맥 근처의 깨진 활용형은 food 의도로 볼 수 있다. 오타만으로 불명확한 대상을 임의 추측하지 않는다.
+1. 로봇·플랫폼의 이동이나 주행을 멈추라는 명확한 명령은 가장 높은 우선순위의 `{"action":"stop","object":"none"}`이다. "로봇 멈춰", "플랫폼 정지", "이동 중단", "거기 서", "움직이지 마"가 이에 해당한다. 음악·재생·알람 같은 다른 기능을 멈추라는 말은 stop이 아니다.
+2. 현재 문장 안에서 긍정적으로 필요한 지원 물체를 모두 식별한다. 두 개 이상이면 하나를 임의로 고르지 말고 unknown이다.
+3. "그거", "그 물건", "아까 말한 것"처럼 현재 문장만으로 대상을 식별할 수 없는 참조는 반드시 unknown이다.
+4. "말고", "필요 없다", "사양하다", "가져오지 마"처럼 부정되거나 제외된 물체는 긍정 의도로 세지 않는다. 남은 명확한 의도가 하나면 그것을 선택한다. 반면 "바를 거 없어?"처럼 필요한 물건이 있는지 묻는 표현은 거절이 아니라 요청이다.
+5. coke: 콜라·음료를 요청하거나, 목·입안의 갈증이나 건조함 때문에 마실 것이 필요한 상황이다. "목을 축이다"는 마실 것을 필요로 한다는 뜻이므로 coke다. 입술이나 피부가 건조한 것은 coke가 아니다.
+6. vaseline: 한국어 "바세린"은 출력 object `vaseline`에 정확히 대응한다. "바세린 통"이나 "바세린 튜브"도 vaseline이다. 바세린·보습제를 요청하거나, 입술·손·피부가 트고 갈라지거나 건조해서 바를 것이 필요한 상황이다. 목이나 입안이 마른 것은 vaseline이 아니다.
+7. tissue: 휴지나 닦을 것을 요청하거나, 책상·바닥·손·물건에 액체·소스·얼룩이 묻어 닦아야 하는 상황이다. 음료 이름은 마시려는 의도가 아니라 흘린 대상일 수 있다.
+8. airpod: 에어팟·무선 이어폰·귀에 꽂을 청취 도구를 요청하거나 통화·음악 청취를 위해 이어폰이 필요한 상황이다. 단순히 음악을 재생하거나 볼륨을 조절하라는 기기 제어는 airpod가 아니다.
+9. 명시적으로 콜라, 바세린, 휴지, 에어팟·블루투스 이어폰 중 하나를 요청하면 부정이나 다중 의도가 없는 한 반드시 대응하는 fetch로 판정한다. 직접 "가져와"라고 하지 않은 상태 서술이나 공손한 질문도 필요 물체가 명확하면 fetch다. 코를 풀려는 상황은 tissue이고, 갈라진 피부에 바를 것이 필요한 상황은 vaseline이다.
+10. 음식, 리모컨, 생수, 약처럼 지원하지 않는 물체, 정보 질문, 인사, 로봇 정지 이외의 기기 제어, 불명확한 요청은 unknown이다. 지원 물체를 다른 물체로 대체하지 않는다.
 
 사용자: 목마른데 마실 거 가져다줘
 결과: {"action":"fetch","object":"coke"}
-사용자: 음료수 하나만 부탁할 수 있을까?
-결과: {"action":"fetch","object":"coke"}
 사용자: 뭐 흘렸는데 닦을 거 가져다줘
 결과: {"action":"fetch","object":"tissue"}
-사용자: 책상 좀 닦아야겠다
+사용자: 입술이 터서 바를 게 필요해
+결과: {"action":"fetch","object":"vaseline"}
+사용자: 바세린 가져다줘
+결과: {"action":"fetch","object":"vaseline"}
+사용자: 바세린 통 좀 줘
+결과: {"action":"fetch","object":"vaseline"}
+사용자: 손이 너무 건조한데 바세린 가져다줘
+결과: {"action":"fetch","object":"vaseline"}
+사용자: 손가락 피부가 갈라져서 바를 게 필요해
+결과: {"action":"fetch","object":"vaseline"}
+사용자: 코 풀 휴지가 필요해
 결과: {"action":"fetch","object":"tissue"}
-사용자: 배고픈데 먹을 거 가져다줘
-결과: {"action":"fetch","object":"snack"}
-사용자: 허기지는데 간식 좀 줘
-결과: {"action":"fetch","object":"snack"}
+사용자: 음악 들을 때 쓸 무선 이어폰 가져다줘
+결과: {"action":"fetch","object":"airpod"}
+사용자: 에어팟이 필요해
+결과: {"action":"fetch","object":"airpod"}
+사용자: 내 블루투스 이어폰을 찾아줘
+결과: {"action":"fetch","object":"airpod"}
+사용자: 로봇 당장 멈춰
+결과: {"action":"stop","object":"none"}
+사용자: 더 이상 움직이지 마
+결과: {"action":"stop","object":"none"}
 사용자: 오늘 날씨 어때
 결과: {"action":"unknown","object":"none"}
-사용자: 배고프고 목도 마른데
+사용자: 콜라랑 휴지 둘 다 가져다줘
 결과: {"action":"unknown","object":"none"}
-사용자: 과자 흘렸어
+사용자: 노래 틀어줘
 결과: {"action":"unknown","object":"none"}
-사용자: 배에서 꼬르륵 소리가 나
-결과: {"action":"fetch","object":"snack"}
-사용자: 출출한데 뭐 먹을 거 없어?
-결과: {"action":"fetch","object":"snack"}
-사용자: 배고픈데 물 마시고 싶어
+사용자: 음악 재생을 멈춰
 결과: {"action":"unknown","object":"none"}
-사용자: 배 속이 비어서 요깃거리가 필요해
-결과: {"action":"fetch","object":"snack"}
 사용자: 전에 말한 물건을 가져와
 결과: {"action":"unknown","object":"none"}
-사용자: 마실 것은 사양하고 배를 채울 간식만 원해
-결과: {"action":"fetch","object":"snack"}
+사용자: 입술도 텄고 목도 말라
+결과: {"action":"unknown","object":"none"}
 
 설명, markdown, 인사말, reasoning 또는 추가 문장 없이 JSON 객체만 출력하라."""
 
 OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "action": {"type": "string", "enum": ["fetch", "unknown"]},
+        "action": {"type": "string", "enum": ["fetch", "stop", "unknown"]},
         "object": {
             "type": "string",
-            "enum": ["coke", "tissue", "snack", "none"],
+            "enum": ["coke", "vaseline", "tissue", "airpod", "none"],
         },
     },
     "required": ["action", "object"],
@@ -82,13 +90,25 @@ OUTPUT_SCHEMA: dict[str, Any] = {
         {
             "properties": {
                 "action": {"const": "fetch"},
+                "object": {"const": "vaseline"},
+            }
+        },
+        {
+            "properties": {
+                "action": {"const": "fetch"},
                 "object": {"const": "tissue"},
             }
         },
         {
             "properties": {
                 "action": {"const": "fetch"},
-                "object": {"const": "snack"},
+                "object": {"const": "airpod"},
+            }
+        },
+        {
+            "properties": {
+                "action": {"const": "stop"},
+                "object": {"const": "none"},
             }
         },
         {
@@ -102,8 +122,10 @@ OUTPUT_SCHEMA: dict[str, Any] = {
 
 ALLOWED_RESULTS = {
     ("fetch", "coke"),
+    ("fetch", "vaseline"),
     ("fetch", "tissue"),
-    ("fetch", "snack"),
+    ("fetch", "airpod"),
+    ("stop", "none"),
     ("unknown", "none"),
 }
 

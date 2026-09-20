@@ -1,186 +1,308 @@
 # Local Voice Robot Command
 
-노트북 마이크로 입력받은 한국어 음성 명령을 로컬 환경에서 처리해,
-서비스 로봇이 사용할 수 있는 제한된 JSON 명령으로 변환하는 테스트 프로젝트입니다.
+Ubuntu 노트북에서 한국어 음성 명령을 완전히 로컬로 처리하고, 검증된 명령만
+ROS2 `/robot_command` topic으로 발행하는 서비스 로봇 명령 파이프라인입니다.
 
-모든 음성 인식과 명령 분류는 로컬에서 실행됩니다.
+현재 Jetson이나 실제 로봇 제어기는 연결하지 않습니다. 노트북에서 음성 인식,
+명령 분류, ROS2 publish까지 검증된 상태입니다.
 
 ## 처리 구조
 
 ```text
-PulseAudio 기본 마이크
+PulseAudio default microphone
         ↓
-WebRTC VAD 음성 시작/종료 감지
+WebRTC VAD (speech start/end)
         ↓
-발화 길이만 WAV 녹음 (16 kHz, mono, signed 16-bit PCM)
+16 kHz mono signed 16-bit PCM WAV
         ↓
-faster-whisper small (CPU, int8)
+faster-whisper small / CPU / int8 / Korean
         ↓
-한국어 텍스트
+Ollama qwen3:4b-instruct
         ↓
-Ollama + qwen3:4b-instruct
+structured JSON validation
         ↓
-JSON 로봇 명령
+valid fetch 또는 stop만 ROS2 /robot_command publish
 ```
 
-현재 출력은 다음 세 가지로 제한됩니다.
+## 지원 명령
+
+가져올 수 있는 물체는 네 종류입니다.
 
 ```json
 {"action":"fetch","object":"coke"}
+{"action":"fetch","object":"vaseline"}
+{"action":"fetch","object":"tissue"}
+{"action":"fetch","object":"airpod"}
 ```
 
+플랫폼 정지 명령:
+
 ```json
-{"action":"fetch","object":"tissue"}
+{"action":"stop","object":"none"}
 ```
+
+지원하지 않거나 모호한 명령:
 
 ```json
 {"action":"unknown","object":"none"}
 ```
 
+`unknown`은 ROS topic으로 발행하지 않습니다. `stop`은 `/robot_command`에
+발행되지만 실제 모터 정지는 향후 Jetson의 subscriber/Task Manager가 수행해야
+합니다.
+
+## 의미 분류 기준
+
+| 의미 | 결과 |
+| --- | --- |
+| 목·입안의 갈증, 마실 음료 필요 | `coke` |
+| 입술·손·피부의 건조함, 보습 필요 | `vaseline` |
+| 휴지 요청, 액체·소스·얼룩을 닦아야 함 | `tissue` |
+| 에어팟·무선 이어폰·청취 도구 필요 | `airpod` |
+| 로봇·플랫폼의 이동 또는 주행 정지 | `stop` |
+| 미지원 물체, 다중 물체, 모호한 참조, 기타 제어 | `unknown` |
+
+여러 지원 물체를 동시에 요청하면 한 물체를 임의로 선택하지 않고 `unknown`으로
+처리합니다. 음악 재생을 멈추라는 명령은 플랫폼 정지가 아니므로 `stop`이 아닙니다.
+
 ## 주요 파일
 
-- `voice_command_test.py`: 마이크 녹음, STT, 명령 분류를 연결한 통합 프로그램
-- `vad_test.py`: 반복 음성 시작/종료 감지를 확인하는 VAD 단독 테스트
-- `llm_test.py`: Ollama를 이용한 명령 분류 및 JSON 검증
-- `requirements.txt`: Python 패키지 의존성
+| 파일 | 역할 |
+| --- | --- |
+| `voice_command_test.py` | VAD → STT → LLM → optional ROS2 통합 실행 |
+| `vad_test.py` | PulseAudio/WebRTC VAD 단독 테스트 |
+| `llm_test.py` | Ollama 명령 분류, JSON schema 및 Python 검증 |
+| `robot_command_publisher.py` | 검증된 fetch/stop 명령의 ROS2 publisher |
+| `test_llm_pick_objects.py` | STT 없는 현재 명령 분류 회귀 테스트 |
+| `test_robot_command_publisher.py` | local ROS2 publisher/subscriber 안전 테스트 |
+| `text_command_ros_test.py` | 텍스트 → LLM → ROS2 통합 테스트 |
+| `test_llm_classifier.py` | 이전 classifier core 회귀 테스트 |
+| `dev_cases_v1.json` | 이전 classifier 개발용 데이터 |
+| `final_heldout_v2.json` | classifier v2의 완료된 평가 데이터 |
+
+`dev_cases_v1.json`과 `final_heldout_v2.json`은 과거 평가 기록입니다. 현재 물체
+구성의 검증에는 `test_llm_pick_objects.py`를 사용합니다.
 
 ## 확인된 환경
 
 - Ubuntu 22.04
 - Python 3.10.12
-- CPU: Intel Core i7-10510U (4코어/8스레드)
-- RAM: 15 GiB
+- Intel Core i7-10510U, 4코어/8스레드
+- RAM 15 GiB
 - NVIDIA GPU 없음
+- ROS2 Humble
 - faster-whisper 1.2.1
+- Whisper model: `small`
 - Ollama 0.33.3
-- Whisper 모델: `small`
-- Ollama 모델: `qwen3:4b-instruct`
+- LLM model: `qwen3:4b-instruct`
+- WebRTC VAD: `webrtcvad-wheels==2.0.14`
 
-## 준비 사항
+## 준비
 
-다음 명령이 실행 가능한 상태여야 합니다.
+Python 가상환경은 프로젝트의 기존 `.venv`를 사용합니다.
 
 ```bash
-pactl get-default-source
-parec --help
+cd /home/sh/llm_robot_test
+.venv/bin/python --version
+.venv/bin/pip install -r requirements.txt
+```
+
+Ollama 서비스와 모델을 확인합니다.
+
+```bash
 ollama --version
+ollama list
+curl http://127.0.0.1:11434/api/tags
 ```
 
-Ollama 서버를 실행하고 모델을 준비합니다.
+필요한 모델 이름은 `qwen3:4b-instruct`입니다.
+
+ROS2 명령을 실행할 터미널에서는 환경을 먼저 불러옵니다.
 
 ```bash
-ollama serve
-ollama pull qwen3:4b-instruct
+source /opt/ros/humble/setup.bash
 ```
 
-이미 Ollama 서비스가 실행 중이라면 `ollama serve`를 중복 실행할 필요가 없습니다.
-API는 기본적으로 `http://127.0.0.1:11434`를 사용합니다.
+ROS2 setup을 source하면 기존 `.venv/bin/python`에서도 `rclpy`와 `std_msgs`를
+불러올 수 있습니다. `pip install rclpy`는 사용하지 않습니다.
 
-## Python 환경 설치
+## 빠른 테스트
 
-시스템 Python과 분리된 가상환경 사용을 권장합니다.
+### 단일 텍스트 분류
 
 ```bash
-python3 -m venv .venv
-./.venv/bin/python -m pip install --upgrade pip
-./.venv/bin/python -m pip install -r requirements.txt
+cd /home/sh/llm_robot_test
+.venv/bin/python llm_test.py "로봇 멈춰"
 ```
 
-Whisper `small` 모델은 첫 실행 시 다운로드될 수 있습니다.
+기대 결과:
 
-## 실행
+```json
+{"action":"stop","object":"none"}
+```
 
-통합 음성 명령 테스트:
+다른 예시:
 
 ```bash
-./.venv/bin/python voice_command_test.py
+.venv/bin/python llm_test.py "목마른데 콜라 가져다줘"
+.venv/bin/python llm_test.py "입술이 터서 바를 게 필요해"
+.venv/bin/python llm_test.py "커피를 쏟아서 닦을 게 필요해"
+.venv/bin/python llm_test.py "에어팟 가져다줘"
+.venv/bin/python llm_test.py "오늘 날씨 어때"
 ```
 
-Whisper 모델은 시작할 때 한 번만 로드됩니다. 다음 안내가 표시되면 말합니다.
+### 전체 텍스트 LLM 테스트
+
+마이크와 STT를 사용하지 않고 48문장을 실행합니다.
+
+```bash
+.venv/bin/python test_llm_pick_objects.py
+```
+
+현재 확인된 결과:
+
+```text
+class.coke=8/8
+class.vaseline=8/8
+class.tissue=8/8
+class.airpod=8/8
+class.stop=8/8
+class.unknown=8/8
+overall=48/48
+```
+
+### ROS2 publisher 단독 테스트
+
+```bash
+source /opt/ros/humble/setup.bash
+.venv/bin/python test_robot_command_publisher.py
+```
+
+이 테스트는 fetch 4종과 stop을 local subscriber로 수신하고, unknown 및 잘못된
+action/object 조합이 차단되는지 확인합니다.
+
+### 텍스트 → LLM → ROS2 테스트
+
+```bash
+source /opt/ros/humble/setup.bash
+.venv/bin/python text_command_ros_test.py
+```
+
+기대 결과:
+
+```text
+[SUBSCRIBER]
+received=5 expected=5
+RESULT: PASS
+```
+
+## 실제 음성 실행
+
+ROS publish 없이 기존 로컬 음성 파이프라인만 실행:
+
+```bash
+cd /home/sh/llm_robot_test
+.venv/bin/python voice_command_test.py
+```
+
+ROS publish 활성화:
+
+```bash
+cd /home/sh/llm_robot_test
+source /opt/ros/humble/setup.bash
+.venv/bin/python voice_command_test.py --ros
+```
+
+다음 안내가 표시되면 명령을 말합니다.
 
 ```text
 [LISTENING]
 말씀해주세요.
 ```
 
-프로그램은 음성을 자동 감지하고 발화 종료 후 STT와 LLM을 실행한 다음 다시
-`[LISTENING]`으로 돌아갑니다. Ctrl+C로 안전하게 종료할 수 있습니다.
+프로그램은 명령 처리가 끝나면 자동으로 다시 `[LISTENING]` 상태로 돌아갑니다.
+종료하려면 `Ctrl+C`를 누릅니다.
 
-녹음은 `recordings/vad_command_*.wav`에 고유한 이름으로 저장되며 기존 파일을
-덮어쓰지 않습니다. 다른 저장 디렉터리는 다음과 같이 지정합니다.
+다른 터미널에서 ROS 메시지를 확인할 수 있습니다.
 
 ```bash
-./.venv/bin/python voice_command_test.py \
-  --output-dir recordings
+source /opt/ros/humble/setup.bash
+ros2 topic echo /robot_command std_msgs/msg/String
 ```
 
-VAD만 반복 테스트하려면 다음 명령을 사용합니다. WAV, Whisper, LLM은 실행되지
+## ROS2 메시지 설계
+
+- Topic: `/robot_command`
+- Type: `std_msgs/msg/String`
+- Payload: compact JSON string
+- QoS depth: 10
+
+publisher는 다음 조건만 통과시킵니다.
+
+- `action == "fetch"`이며 object가 `coke`, `vaseline`, `tissue`, `airpod` 중 하나
+- 또는 `action == "stop"`이며 object가 `none`
+
+그 밖의 action/object 조합과 추가 필드가 있는 dict는 발행하지 않습니다.
+
+## VAD 및 STT 설정
+
+- PulseAudio default source (`pactl get-default-source`)
+- PCM: 16 kHz, mono, signed 16-bit
+- WebRTC VAD mode: 3
+- Frame: 30 ms (`480 samples`, `960 bytes`)
+- Stream warm-up: 1.2초
+- Start window: 300 ms 중 speech 80% 이상
+- Start RMS gate: 200
+- Pre-roll: 450 ms
+- End silence: 900 ms
+- Maximum utterance: 15초
+- Whisper: `small`, CPU, `int8`, `language="ko"`
+
+WebRTC VAD는 화자 식별 기능이 없습니다. 주변 사람의 목소리도 음성으로 감지할 수
+있으므로 다중 사용자 환경에서는 wake word나 화자 인식이 추가로 필요합니다.
+
+## LLM 설정
+
+- Model: `qwen3:4b-instruct`
+- `think: false`
+- `temperature: 0`
+- `keep_alive: 10m`
+- JSON schema structured output
+- Python-side action/object allowlist 검증
+
+## 저장소에서 제외되는 데이터
+
+`.gitignore`는 다음 항목을 제외합니다.
+
+- `.venv`와 Python cache
+- 녹음 WAV 및 기타 오디오
+- 로컬 model artifact
+- 로그와 임시 파일
+- `.env`와 credential 파일
+
+실제 음성이 담긴 파일은 개인정보를 포함할 수 있으므로 공개 저장소에 commit하지
 않습니다.
 
-```bash
-./.venv/bin/python vad_test.py
+## 현재 범위와 다음 단계
+
+현재 완료 범위:
+
+```text
+Laptop microphone
+→ VAD
+→ faster-whisper
+→ Local LLM
+→ validated fetch/stop command
+→ local ROS2 /robot_command
 ```
 
-LLM 분류만 테스트하려면 다음과 같이 실행합니다.
+아직 포함되지 않은 범위:
 
-```bash
-./.venv/bin/python llm_test.py "뭐 흘렸는데 닦을 거 가져다줘"
-```
+- Jetson subscriber
+- Wi-Fi DDS 설정 및 검증
+- TurtleBot/Nav2 이동
+- OpenManipulator 물체 집기
+- 실제 플랫폼 stop 수행
 
-## 통합 테스트 결과
-
-| 음성 명령 | STT 결과 예시 | 최종 JSON | 결과 |
-|---|---|---|---|
-| 목마른데 마실 거 가져다줘 | 목마른 데 마실 거 가져다 줘 | `{"action":"fetch","object":"coke"}` | 성공 |
-| 뭐 흘렸는데 닦을 거 가져다줘 | 뭐 흘렸는데 닦을거 가져다줘 | `{"action":"fetch","object":"tissue"}` | 성공 |
-| 오늘 날씨 어때 | 오늘 날씨 어때? | `{"action":"unknown","object":"none"}` | 성공 |
-| 목마른데 … (0.3초 쉼) … 마실 거 가져다줘 | 목마린데 마실 거 가져다 줘 | `{"action":"fetch","object":"coke"}` | 성공 |
-
-Whisper 전사에 사소한 띄어쓰기 차이가 있어도 최종 명령의 의미가 맞으면 성공으로
-판정했습니다.
-
-## VAD 설정
-
-- WebRTC VAD mode: `3`
-- PCM frame: `30 ms` (`480 samples`, `960 bytes`)
-- Stream warm-up: `1.2초` 입력 폐기
-- Start window: 최근 `300 ms` 중 speech `80%` 이상
-- Start RMS gate: `200` (LISTENING 상태에만 적용)
-- Pre-roll: `450 ms`
-- End silence: `900 ms`
-- 최대 발화 길이: `15초`
-
-Stream warm-up은 이 장치에서 새 `parec` 연결 직후 관찰된 DC-offset 감쇠 신호가
-음성으로 오인되는 것을 막습니다. RMS gate는 음성 시작에만 적용되므로 작은 음절이
-발화 중간의 종료 판정에 영향을 주지 않습니다.
-
-WebRTC VAD는 화자 식별기가 아닙니다. 주변 사람이 말하면 정상적인 음성으로
-감지하므로 여러 사람이 대화하는 환경에서는 wake word 또는 별도의 화자 인식이
-추가로 필요할 수 있습니다.
-
-## 오류 처리
-
-통합 프로그램은 다음 오류를 단계별 메시지로 표시합니다.
-
-- PulseAudio 기본 입력 장치 또는 녹음 실패
-- WAV 생성 및 오디오 검사 실패
-- Whisper 모델 로드 또는 전사 실패
-- Ollama API 연결 실패
-- LLM 응답 JSON 형식 또는 허용 값 검증 실패
-
-## 저장소에 포함하지 않는 데이터
-
-다음 데이터는 `.gitignore`로 제외됩니다.
-
-- Python 가상환경과 캐시
-- 녹음된 WAV 파일
-- 로컬 로그와 임시 파일
-- Whisper 및 Ollama 모델 데이터
-
-실제 음성이 담긴 녹음 파일에는 개인정보가 포함될 수 있으므로 공개 저장소에
-커밋하지 않는 것을 권장합니다.
-
-## 현재 범위
-
-현재 버전은 로컬 음성 명령 분류까지만 구현합니다. ROS2 publisher, Jetson,
-TurtleBot, Nav2 및 OpenManipulator 제어는 아직 포함하지 않습니다.
+다음 단계에서는 Jetson이 `/robot_command`를 구독하고 Task Manager가 fetch/stop을
+안전하게 처리하도록 연결해야 합니다.
