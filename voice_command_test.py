@@ -47,10 +47,11 @@ PRE_ROLL_FRAMES = PRE_ROLL_MS // FRAME_MS
 MAX_UTTERANCE_SECONDS = 15
 MAX_UTTERANCE_FRAMES = MAX_UTTERANCE_SECONDS * 1_000 // FRAME_MS
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
+ROS_TOPIC_NAME = "/voice/robot_command"
 
 
 class CommandPublisher(Protocol):
-    def publish_command(self, command: Any) -> bool: ...
+    def publish_command(self, command: Any, transcript: str) -> bool: ...
 
     def close(self) -> None: ...
 
@@ -395,9 +396,9 @@ class VoiceCommandPipeline:
 
         ros_published = False
         if self.command_publisher is not None:
-            ros_published = self.command_publisher.publish_command(command)
+            ros_published = self.command_publisher.publish_command(command, text)
             print("\n[ROS]")
-            print("published /robot_command" if ros_published else "skipped")
+            print(f"published {ROS_TOPIC_NAME}" if ros_published else "skipped")
 
         voice_end_to_command = command_done - float(capture["voice_end_wall"])
         print("\n[TIME]")
@@ -452,7 +453,7 @@ def main() -> int:
     parser.add_argument(
         "--ros",
         action="store_true",
-        help="Publish validated fetch commands to ROS2 /robot_command",
+        help="Publish validated fetch/stop commands to ROS2 /voice/robot_command",
     )
     args = parser.parse_args()
     if args.max_commands is not None and args.max_commands < 1:

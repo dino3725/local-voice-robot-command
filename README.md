@@ -1,7 +1,7 @@
 # Local Voice Robot Command
 
 Ubuntu 노트북에서 한국어 음성 명령을 완전히 로컬로 처리하고, 검증된 명령만
-ROS2 `/robot_command` topic으로 발행하는 서비스 로봇 명령 파이프라인입니다.
+ROS2 `/voice/robot_command` topic으로 발행하는 서비스 로봇 명령 파이프라인입니다.
 
 현재 Jetson이나 실제 로봇 제어기는 연결하지 않습니다. 노트북에서 음성 인식,
 명령 분류, ROS2 publish까지 검증된 상태입니다.
@@ -21,7 +21,7 @@ Ollama qwen3:4b-instruct
         ↓
 structured JSON validation
         ↓
-valid fetch 또는 stop만 ROS2 /robot_command publish
+valid fetch 또는 stop만 eated_interfaces/RobotCommand publish
 ```
 
 ## 지원 명령
@@ -47,7 +47,7 @@ valid fetch 또는 stop만 ROS2 /robot_command publish
 {"action":"unknown","object":"none"}
 ```
 
-`unknown`은 ROS topic으로 발행하지 않습니다. `stop`은 `/robot_command`에
+`unknown`은 ROS topic으로 발행하지 않습니다. `stop`은 `/voice/robot_command`에
 발행되지만 실제 모터 정지는 향후 Jetson의 subscriber/Task Manager가 수행해야
 합니다.
 
@@ -73,6 +73,7 @@ valid fetch 또는 stop만 ROS2 /robot_command publish
 | `vad_test.py` | PulseAudio/WebRTC VAD 단독 테스트 |
 | `llm_test.py` | Ollama 명령 분류, JSON schema 및 Python 검증 |
 | `robot_command_publisher.py` | 검증된 fetch/stop 명령의 ROS2 publisher |
+| `src/eated_interfaces` | Jetson과 공유하는 ROS2 custom interface 패키지 |
 | `test_llm_pick_objects.py` | STT 없는 현재 명령 분류 회귀 테스트 |
 | `test_robot_command_publisher.py` | local ROS2 publisher/subscriber 안전 테스트 |
 | `text_command_ros_test.py` | 텍스트 → LLM → ROS2 통합 테스트 |
@@ -210,6 +211,8 @@ ROS publish 활성화:
 ```bash
 cd /home/sh/llm_robot_test
 source /opt/ros/humble/setup.bash
+colcon build --packages-select eated_interfaces
+source install/setup.bash
 .venv/bin/python voice_command_test.py --ros
 ```
 
@@ -227,14 +230,15 @@ source /opt/ros/humble/setup.bash
 
 ```bash
 source /opt/ros/humble/setup.bash
-ros2 topic echo /robot_command std_msgs/msg/String
+source /home/sh/llm_robot_test/install/setup.bash
+ros2 topic echo /voice/robot_command eated_interfaces/msg/RobotCommand
 ```
 
 ## ROS2 메시지 설계
 
-- Topic: `/robot_command`
-- Type: `std_msgs/msg/String`
-- Payload: compact JSON string
+- Topic: `/voice/robot_command`
+- Type: `eated_interfaces/msg/RobotCommand`
+- Fields: `header`, `action`, `target_class`, `transcript`
 - QoS depth: 10
 
 publisher는 다음 조건만 통과시킵니다.
@@ -243,6 +247,27 @@ publisher는 다음 조건만 통과시킵니다.
 - 또는 `action == "stop"`이며 object가 `none`
 
 그 밖의 action/object 조합과 추가 필드가 있는 dict는 발행하지 않습니다.
+
+LLM의 기존 `object` 값은 publish 직전에 `target_class`로 매핑하며, Whisper가
+생성한 한국어 문장은 `transcript`에 보존합니다. `header.stamp`는 publisher의
+ROS clock으로 채웁니다.
+
+ROS 계층만 단독으로 검사하려면 다음을 실행합니다.
+
+```bash
+cd /home/sh/llm_robot_test
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 test_robot_command_publisher.py
+```
+
+CLI로 custom message를 직접 보낼 수도 있습니다.
+
+```bash
+ros2 topic pub --once /voice/robot_command \
+  eated_interfaces/msg/RobotCommand \
+  "{action: fetch, target_class: coke, transcript: '목마른데 마실 거 가져다줘'}"
+```
 
 ## VAD 및 STT 설정
 
@@ -383,16 +408,17 @@ Laptop microphone
 → faster-whisper
 → Local LLM
 → validated fetch/stop command
-→ local ROS2 /robot_command
+→ eated_interfaces/msg/RobotCommand
+→ ROS2 /voice/robot_command
 ```
 
 아직 포함되지 않은 범위:
 
-- Jetson subscriber
 - Wi-Fi DDS 설정 및 검증
 - TurtleBot/Nav2 이동
 - OpenManipulator 물체 집기
 - 실제 플랫폼 stop 수행
 
-다음 단계에서는 Jetson이 `/robot_command`를 구독하고 Task Manager가 fetch/stop을
-안전하게 처리하도록 연결해야 합니다.
+다음 단계에서는 Jetson과 DDS 통신을 확인하고, Jetson Task Manager가 fetch/stop을
+안전하게 처리하도록 연결해야 합니다. 현재 Jetson control 코드는 `stop`을 처리하지
+않을 수 있으므로 실제 플랫폼 정지 기능은 별도로 구현하고 검증해야 합니다.

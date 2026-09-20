@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import argparse
-import json
 import time
 
+from eated_interfaces.msg import RobotCommand
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import String
 
 from robot_command_publisher import RobotCommandPublisher, TOPIC_NAME
 
@@ -46,13 +45,13 @@ def main() -> int:
     parser.add_argument("--hold-seconds", type=float, default=0.0)
     args = parser.parse_args()
 
-    received: list[str] = []
+    received: list[RobotCommand] = []
     with RobotCommandPublisher("robot_command_publisher_test") as publisher:
         subscriber = Node("robot_command_subscriber_test", context=publisher.context)
         subscriber.create_subscription(
-            String,
+            RobotCommand,
             TOPIC_NAME,
-            lambda message: received.append(message.data),
+            received.append,
             10,
         )
         executor = SingleThreadedExecutor(context=publisher.context)
@@ -69,21 +68,45 @@ def main() -> int:
 
             decisions: list[bool] = []
             for command in PUBLISHABLE_COMMANDS + BLOCKED_COMMANDS:
-                decisions.append(publisher.publish_command(command))
+                transcript = f"test:{command!r}"
+                decisions.append(publisher.publish_command(command, transcript))
             delivered = spin_until(executor, lambda: len(received) >= 5, 5.0)
             if not delivered:
                 raise RuntimeError(f"expected 5 messages, received {len(received)}")
 
-            parsed = [json.loads(payload) for payload in received]
-            expected = PUBLISHABLE_COMMANDS
-            if parsed != expected:
-                raise RuntimeError(f"payload mismatch: {parsed!r}")
+            actual = [
+                {
+                    "action": message.action,
+                    "object": message.target_class,
+                    "transcript": message.transcript,
+                }
+                for message in received
+            ]
+            expected = [
+                {
+                    "action": command["action"],
+                    "object": command["object"],
+                    "transcript": f"test:{command!r}",
+                }
+                for command in PUBLISHABLE_COMMANDS
+            ]
+            if actual != expected:
+                raise RuntimeError(f"message mismatch: {actual!r}")
+            if any(
+                message.header.stamp.sec == 0
+                and message.header.stamp.nanosec == 0
+                for message in received
+            ):
+                raise RuntimeError("message header timestamp was not populated")
             expected_decisions = [True] * len(PUBLISHABLE_COMMANDS) + [False] * len(BLOCKED_COMMANDS)
             if decisions != expected_decisions:
                 raise RuntimeError(f"safety filter mismatch: {decisions!r}")
 
-            for command, payload in zip(PUBLISHABLE_COMMANDS, received, strict=True):
-                print(f"PUBLISHED {command['action']}/{command['object']}: {payload}")
+            for message in received:
+                print(
+                    "PUBLISHED "
+                    f"{message.action}/{message.target_class}: {message.transcript}"
+                )
             print(f"UNKNOWN_AND_INVALID_BLOCKED: {len(BLOCKED_COMMANDS)}/{len(BLOCKED_COMMANDS)}")
             print(f"RECEIVED_COUNT: {len(received)}")
             print("RESULT: PASS", flush=True)

@@ -6,9 +6,9 @@ from __future__ import annotations
 import json
 import time
 
+from eated_interfaces.msg import RobotCommand
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import String
 
 from llm_test import classify_command
 from robot_command_publisher import RobotCommandPublisher, TOPIC_NAME
@@ -34,13 +34,13 @@ def spin_until(executor: SingleThreadedExecutor, predicate: object, timeout: flo
 
 
 def main() -> int:
-    received: list[str] = []
+    received: list[RobotCommand] = []
     with RobotCommandPublisher("text_command_ros_publisher") as publisher:
         subscriber = Node("text_command_ros_subscriber", context=publisher.context)
         subscriber.create_subscription(
-            String,
+            RobotCommand,
             TOPIC_NAME,
-            lambda message: received.append(message.data),
+            received.append,
             10,
         )
         executor = SingleThreadedExecutor(context=publisher.context)
@@ -54,29 +54,35 @@ def main() -> int:
             ):
                 raise RuntimeError("local subscriber discovery timed out")
 
-            expected_payloads: list[str] = []
+            expected_messages: list[tuple[str, str, str]] = []
             for text, expected, should_publish in CASES:
                 command = classify_command(text)
-                published = publisher.publish_command(command)
+                published = publisher.publish_command(command, text)
                 print(f"\n[INPUT]\n{text}")
                 print("\n[LLM]")
                 print(json.dumps(command, ensure_ascii=False, separators=(",", ":")))
                 print("\n[ROS]")
-                print("published /robot_command" if published else "skipped")
+                print(f"published {TOPIC_NAME}" if published else "skipped")
                 if command != expected or published != should_publish:
                     raise RuntimeError(
                         f"case mismatch: expected={expected!r}/{should_publish}, "
                         f"actual={command!r}/{published}"
                     )
                 if published:
-                    expected_payloads.append(
-                        json.dumps(command, ensure_ascii=False, separators=(",", ":"))
+                    expected_messages.append(
+                        (command["action"], command["object"], text)
                     )
 
             if not spin_until(executor, lambda: len(received) >= 5, 5.0):
                 raise RuntimeError(f"expected 5 ROS messages, received {len(received)}")
-            if received != expected_payloads:
-                raise RuntimeError(f"subscriber payload mismatch: {received!r}")
+            actual_messages = [
+                (message.action, message.target_class, message.transcript)
+                for message in received
+            ]
+            if actual_messages != expected_messages:
+                raise RuntimeError(
+                    f"subscriber message mismatch: {actual_messages!r}"
+                )
             print(f"\n[SUBSCRIBER]\nreceived={len(received)} expected=5")
             print("RESULT: PASS")
         finally:
