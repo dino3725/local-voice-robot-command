@@ -270,6 +270,96 @@ WebRTC VAD는 화자 식별 기능이 없습니다. 주변 사람의 목소리�
 - JSON schema structured output
 - Python-side action/object allowlist 검증
 
+## YOLO 기반 객체 인식
+
+음성 명령에서 선택된 물체를 카메라 영상에서 찾기 위해 별도 환경에서 YOLO11
+객체 인식 모델을 학습하고 테스트했습니다. 하나의 모델이 다음 네 클래스를
+탐지합니다.
+
+```text
+coke
+vaseline
+tissue
+airpod
+```
+
+현재 음성 명령 시스템과 객체 인식 시스템은 각각 독립적으로 검증했으며, 아직
+하나의 ROS2 실행 파이프라인으로 연결하지 않았습니다.
+
+### 데이터셋
+
+Roboflow에서 Object Detection 데이터셋을 구성하고 YOLO11 형식으로 변환했습니다.
+학습, validation, 최종 test 데이터를 분리해 사용했습니다.
+
+### 학습 환경
+
+- Ubuntu 22.04
+- NVIDIA GeForce RTX 5060 Ti 8 GB
+- Python 3.11.16
+- PyTorch 2.11.0 + CUDA 12.8
+- Ultralytics 8.4.152
+- Model: YOLO11n
+- Input size: 640 × 640
+- Epochs: 100
+- Batch size: 16
+
+학습 명령:
+
+```bash
+yolo detect train \
+  model=yolo11n.pt \
+  data=$HOME/yolo_ws/datasets/coke_tissue_airpod_vaseline/data.yaml \
+  epochs=100 \
+  imgsz=640 \
+  batch=16 \
+  device=0 \
+  patience=20 \
+  project=$HOME/yolo_ws/runs \
+  name=coke_tissue_airpod_vaseline
+```
+
+학습된 weight 위치:
+
+```text
+~/yolo_ws/runs/coke_tissue_airpod_vaseline/weights/best.pt
+```
+
+### Test 결과
+
+학습에 사용하지 않은 test 이미지 151장으로 평가했습니다.
+
+| Class | Precision | Recall | mAP50 | mAP50-95 |
+| --- | ---: | ---: | ---: | ---: |
+| All | 0.952 | 0.924 | 0.949 | 0.823 |
+| airpod | 0.959 | 1.000 | 0.995 | 0.796 |
+| coke | 0.965 | 0.839 | 0.951 | 0.822 |
+| tissue | 0.998 | 1.000 | 0.995 | 0.938 |
+| vaseline | 0.884 | 0.857 | 0.855 | 0.734 |
+
+전체 test 데이터 기준 `mAP50 = 0.949`, `mAP50-95 = 0.823`입니다.
+`tissue`와 `airpod`은 높은 검출 성능을 보였고, `coke`와 `vaseline`은 일부
+환경에서 미검출 또는 클래스 혼동이 발생할 수 있습니다.
+
+### RealSense RGB 검출
+
+```bash
+yolo detect predict \
+  model=$HOME/yolo_ws/runs/coke_tissue_airpod_vaseline/weights/best.pt \
+  source=4 \
+  conf=0.25 \
+  show=True \
+  device=0
+```
+
+RGB 영상에서 class, confidence, bounding box를 실시간으로 확인했습니다. 현재
+확인된 대표적인 오분류는 다음과 같습니다.
+
+- `airpod`을 `tissue`로 판단
+- `vaseline`을 `airpod`으로 판단
+
+향후 실제 로봇 카메라의 실패 사례를 데이터셋에 추가해 fine-tuning하고,
+RealSense depth로 거리 또는 3차원 위치를 계산할 예정입니다.
+
 ## 저장소에서 제외되는 데이터
 
 `.gitignore`는 다음 항목을 제외합니다.
