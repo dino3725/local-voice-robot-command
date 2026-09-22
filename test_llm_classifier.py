@@ -161,7 +161,7 @@ def make_cases() -> list[Case]:
 
 def expected_result(obj: str) -> dict[str, str]:
     if obj == "unknown":
-        return {"action": "unknown", "object": "none"}
+        return {"action": "unknown", "object": ""}
     return {"action": "fetch", "object": obj}
 
 
@@ -206,7 +206,7 @@ def main() -> int:
             failures += 1
         if actual is None:
             actual_class = "error"
-        elif actual["object"] == "none":
+        elif actual["object"] == "":
             actual_class = "unknown"
         else:
             actual_class = actual["object"]

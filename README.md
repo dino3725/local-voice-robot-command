@@ -3,8 +3,8 @@
 Ubuntu 노트북에서 한국어 음성 명령을 완전히 로컬로 처리하고, 검증된 명령만
 ROS2 `/voice/robot_command` topic으로 발행하는 서비스 로봇 명령 파이프라인입니다.
 
-현재 Jetson이나 실제 로봇 제어기는 연결하지 않습니다. 노트북에서 음성 인식,
-명령 분류, ROS2 publish까지 검증된 상태입니다.
+현재 Jetson과의 ROS2 DDS 통신 및 fetch 명령 전달까지 검증됐습니다. 노트북에서
+음성 인식, 명령 분류 및 custom ROS2 message publish를 수행합니다.
 
 ## 처리 구조
 
@@ -38,18 +38,18 @@ valid fetch 또는 stop만 eated_interfaces/RobotCommand publish
 플랫폼 정지 명령:
 
 ```json
-{"action":"stop","object":"none"}
+{"action":"stop","object":""}
 ```
 
 지원하지 않거나 모호한 명령:
 
 ```json
-{"action":"unknown","object":"none"}
+{"action":"unknown","object":""}
 ```
 
 `unknown`은 ROS topic으로 발행하지 않습니다. `stop`은 `/voice/robot_command`에
-발행되지만 실제 모터 정지는 향후 Jetson의 subscriber/Task Manager가 수행해야
-합니다.
+발행하며, 실제 action 취소·베이스 정지·매니퓰레이터 hold는 stop을 지원하는
+Jetson Control Node가 수행합니다.
 
 ## 의미 분류 기준
 
@@ -139,7 +139,7 @@ cd /home/sh/llm_robot_test
 기대 결과:
 
 ```json
-{"action":"stop","object":"none"}
+{"action":"stop","object":""}
 ```
 
 다른 예시:
@@ -244,7 +244,7 @@ ros2 topic echo /voice/robot_command eated_interfaces/msg/RobotCommand
 publisher는 다음 조건만 통과시킵니다.
 
 - `action == "fetch"`이며 object가 `coke`, `vaseline`, `tissue`, `airpod` 중 하나
-- 또는 `action == "stop"`이며 object가 `none`
+- 또는 `action == "stop"`이며 object가 빈 문자열
 
 그 밖의 action/object 조합과 추가 필드가 있는 dict는 발행하지 않습니다.
 
@@ -417,8 +417,8 @@ Laptop microphone
 - Wi-Fi DDS 설정 및 검증
 - TurtleBot/Nav2 이동
 - OpenManipulator 물체 집기
-- 실제 플랫폼 stop 수행
+- 음성 stop의 실제 하드웨어 종단 검증
 
-다음 단계에서는 Jetson과 DDS 통신을 확인하고, Jetson Task Manager가 fetch/stop을
-안전하게 처리하도록 연결해야 합니다. 현재 Jetson control 코드는 `stop`을 처리하지
-않을 수 있으므로 실제 플랫폼 정지 기능은 별도로 구현하고 검증해야 합니다.
+다음 단계에서는 실제 로봇을 저위험 상태에 두고 음성 stop이 Jetson의 action 취소,
+`cmd_vel = 0`, 매니퓰레이터 hold 및 `ERROR` 상태 전환까지 이어지는지 검증해야
+합니다. 음성 stop만을 유일한 비상정지 수단으로 사용해서는 안 됩니다.

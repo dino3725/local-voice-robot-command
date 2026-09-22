@@ -19,8 +19,8 @@ CASES = [
     ("입술이 터서 바를 게 필요해", {"action": "fetch", "object": "vaseline"}, True),
     ("뭐 흘렸는데 닦을 거 가져다줘", {"action": "fetch", "object": "tissue"}, True),
     ("음악 들을 때 쓸 무선 이어폰 가져다줘", {"action": "fetch", "object": "airpod"}, True),
-    ("로봇 당장 멈춰", {"action": "stop", "object": "none"}, True),
-    ("오늘 날씨 어때", {"action": "unknown", "object": "none"}, False),
+    ("로봇 당장 멈춰", {"action": "stop", "object": ""}, True),
+    ("오늘 날씨 어때", {"action": "unknown", "object": ""}, False),
 ]
 
 

@@ -17,7 +17,7 @@ SYSTEM_PROMPT = """당신은 서비스 로봇의 자연어 명령을 제한된 �
 로봇이 가져올 수 있는 물체는 coke, vaseline, tissue, airpod뿐이다.
 
 분류 규칙:
-1. 로봇·플랫폼의 이동이나 주행을 멈추라는 명확한 명령은 가장 높은 우선순위의 `{"action":"stop","object":"none"}`이다. "로봇 멈춰", "플랫폼 정지", "이동 중단", "거기 서", "움직이지 마"가 이에 해당한다. 음악·재생·알람 같은 다른 기능을 멈추라는 말은 stop이 아니다.
+1. 로봇·플랫폼의 이동이나 주행을 멈추라는 명확한 명령은 가장 높은 우선순위의 `{"action":"stop","object":""}`이다. "로봇 멈춰", "멈춰", "정지해", "로봇 정지", "지금 멈춰", "당장 멈춰", "움직이지 마", "스톱", "stop", "작동 멈춰", "로봇 그만 움직여"가 이에 해당한다. 음악·재생·알람 같은 다른 기능을 멈추라는 말은 stop이 아니다.
 2. 현재 문장 안에서 긍정적으로 필요한 지원 물체를 모두 식별한다. 두 개 이상이면 하나를 임의로 고르지 말고 unknown이다.
 3. "그거", "그 물건", "아까 말한 것"처럼 현재 문장만으로 대상을 식별할 수 없는 참조는 반드시 unknown이다.
 4. "말고", "필요 없다", "사양하다", "가져오지 마"처럼 부정되거나 제외된 물체는 긍정 의도로 세지 않는다. 남은 명확한 의도가 하나면 그것을 선택한다. 반면 "바를 거 없어?"처럼 필요한 물건이 있는지 묻는 표현은 거절이 아니라 요청이다.
@@ -51,21 +51,25 @@ SYSTEM_PROMPT = """당신은 서비스 로봇의 자연어 명령을 제한된 �
 사용자: 내 블루투스 이어폰을 찾아줘
 결과: {"action":"fetch","object":"airpod"}
 사용자: 로봇 당장 멈춰
-결과: {"action":"stop","object":"none"}
+결과: {"action":"stop","object":""}
 사용자: 더 이상 움직이지 마
-결과: {"action":"stop","object":"none"}
+결과: {"action":"stop","object":""}
+사용자: 정지해
+결과: {"action":"stop","object":""}
+사용자: 스톱
+결과: {"action":"stop","object":""}
 사용자: 오늘 날씨 어때
-결과: {"action":"unknown","object":"none"}
+결과: {"action":"unknown","object":""}
 사용자: 콜라랑 휴지 둘 다 가져다줘
-결과: {"action":"unknown","object":"none"}
+결과: {"action":"unknown","object":""}
 사용자: 노래 틀어줘
-결과: {"action":"unknown","object":"none"}
+결과: {"action":"unknown","object":""}
 사용자: 음악 재생을 멈춰
-결과: {"action":"unknown","object":"none"}
+결과: {"action":"unknown","object":""}
 사용자: 전에 말한 물건을 가져와
-결과: {"action":"unknown","object":"none"}
+결과: {"action":"unknown","object":""}
 사용자: 입술도 텄고 목도 말라
-결과: {"action":"unknown","object":"none"}
+결과: {"action":"unknown","object":""}
 
 설명, markdown, 인사말, reasoning 또는 추가 문장 없이 JSON 객체만 출력하라."""
 
@@ -75,7 +79,7 @@ OUTPUT_SCHEMA: dict[str, Any] = {
         "action": {"type": "string", "enum": ["fetch", "stop", "unknown"]},
         "object": {
             "type": "string",
-            "enum": ["coke", "vaseline", "tissue", "airpod", "none"],
+            "enum": ["coke", "vaseline", "tissue", "airpod", ""],
         },
     },
     "required": ["action", "object"],
@@ -108,13 +112,13 @@ OUTPUT_SCHEMA: dict[str, Any] = {
         {
             "properties": {
                 "action": {"const": "stop"},
-                "object": {"const": "none"},
+                "object": {"const": ""},
             }
         },
         {
             "properties": {
                 "action": {"const": "unknown"},
-                "object": {"const": "none"},
+                "object": {"const": ""},
             }
         },
     ],
@@ -125,8 +129,8 @@ ALLOWED_RESULTS = {
     ("fetch", "vaseline"),
     ("fetch", "tissue"),
     ("fetch", "airpod"),
-    ("stop", "none"),
-    ("unknown", "none"),
+    ("stop", ""),
+    ("unknown", ""),
 }
 
 

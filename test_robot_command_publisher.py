@@ -18,15 +18,18 @@ PUBLISHABLE_COMMANDS = [
     {"action": "fetch", "object": "vaseline"},
     {"action": "fetch", "object": "tissue"},
     {"action": "fetch", "object": "airpod"},
-    {"action": "stop", "object": "none"},
+    {"action": "stop", "object": ""},
 ]
 BLOCKED_COMMANDS = [
-    {"action": "unknown", "object": "none"},
+    {"action": "unknown", "object": ""},
     {"action": "fetch", "object": "water"},
     {"action": "fetch", "object": "snack"},
     {"action": "move", "object": "coke"},
+    {"action": "fetch", "object": ""},
     {"action": "fetch", "object": "none"},
     {"action": "stop", "object": "coke"},
+    {"action": "stop", "object": "none"},
+    {"action": "unknown", "object": "none"},
     "not a command",
 ]
 

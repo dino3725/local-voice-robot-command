@@ -21,9 +21,9 @@ def command_payload(command: Any) -> tuple[str, str] | None:
         return None
     action = command.get("action")
     obj = command.get("object")
-    if action == "stop" and obj == "none":
-        return "stop", "none"
-    elif action == "fetch" and obj in VALID_OBJECTS:
+    if action == "stop" and obj == "":
+        return "stop", ""
+    if action == "fetch" and obj in VALID_OBJECTS:
         return "fetch", obj
     return None
 
@@ -41,7 +41,7 @@ class RobotCommandPublisher:
     def publish_command(self, command: Any, transcript: str) -> bool:
         payload = command_payload(command)
         if payload is None:
-            if command == {"action": "unknown", "object": "none"}:
+            if command == {"action": "unknown", "object": ""}:
                 self.node.get_logger().info(
                     "Unknown command. ROS message not published."
                 )

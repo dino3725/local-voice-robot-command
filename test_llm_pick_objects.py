@@ -13,6 +13,7 @@ from llm_test import classify_command
 
 CASES = {
     "coke": [
+        "콜라 가져다줘",
         "콜라 한 캔만 가져와 줘",
         "갈증 나니까 마실 음료가 필요해",
         "입안이 메말라서 한 모금 마시고 싶어",
@@ -23,6 +24,7 @@ CASES = {
         "목이 타는데 콜라 좀 줘",
     ],
     "vaseline": [
+        "바세린 가져다줘",
         "바세린 통을 가져다줘",
         "입술이 갈라져서 바를 게 필요해",
         "손등 피부가 거칠어서 보습하고 싶어",
@@ -33,6 +35,7 @@ CASES = {
         "메마른 피부에 쓸 연고 같은 보습제를 가져와",
     ],
     "tissue": [
+        "휴지 가져다줘",
         "휴지 몇 장 가져다줘",
         "커피를 엎질러서 닦아야 해",
         "바닥에 물이 흥건하니 닦을 걸 줘",
@@ -43,6 +46,7 @@ CASES = {
         "테이블이 끈적하니 닦을 걸 갖다줘",
     ],
     "airpod": [
+        "에어팟 가져다줘",
         "에어팟을 가져다줘",
         "무선 이어폰이 필요해",
         "노래를 들을 수 있게 이어폰 좀 줘",
@@ -54,6 +58,15 @@ CASES = {
     ],
     "stop": [
         "로봇 멈춰",
+        "멈춰",
+        "정지해",
+        "로봇 정지",
+        "지금 당장 멈춰",
+        "움직이지 마",
+        "스톱",
+        "stop",
+        "작동 멈춰",
+        "로봇 그만 움직여",
         "플랫폼을 지금 정지해",
         "당장 이동을 중단해 줘",
         "거기 그대로 서",
@@ -63,6 +76,9 @@ CASES = {
         "앞으로 가지 말고 멈춰",
     ],
     "unknown": [
+        "오늘 날씨 어때",
+        "안녕",
+        "노래 틀어줘",
         "배고프니까 과자 가져다줘",
         "오늘 오후 날씨가 어때",
         "텔레비전 리모컨을 가져와",
@@ -77,9 +93,9 @@ CASES = {
 
 def expected_result(label: str) -> dict[str, str]:
     if label == "stop":
-        return {"action": "stop", "object": "none"}
+        return {"action": "stop", "object": ""}
     if label == "unknown":
-        return {"action": "unknown", "object": "none"}
+        return {"action": "unknown", "object": ""}
     return {"action": "fetch", "object": label}
 
 
@@ -106,7 +122,7 @@ def main() -> int:
                 "error"
                 if actual is None
                 else actual["action"]
-                if actual["object"] == "none"
+                if actual["object"] == ""
                 else actual["object"]
             )
             totals[expected_class] += 1

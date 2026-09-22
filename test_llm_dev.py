@@ -53,14 +53,14 @@ def validate_cases(data: dict[str, list[dict[str, str]]]) -> None:
 
 def expected_result(label: str) -> dict[str, str]:
     if label == "unknown":
-        return {"action": "unknown", "object": "none"}
+        return {"action": "unknown", "object": ""}
     return {"action": "fetch", "object": label}
 
 
 def actual_class(result: dict[str, str] | None) -> str:
     if result is None:
         return "error"
-    return "unknown" if result.get("object") == "none" else result.get("object", "error")
+    return "unknown" if result.get("object") == "" else result.get("object", "error")
 
 
 def run_suite(name: str, cases: list[dict[str, str]]) -> int:

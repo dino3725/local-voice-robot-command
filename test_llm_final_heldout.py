@@ -63,14 +63,14 @@ def load_and_validate() -> dict[str, list[dict[str, str]]]:
 
 def expected_result(label: str) -> dict[str, str]:
     if label == "unknown":
-        return {"action": "unknown", "object": "none"}
+        return {"action": "unknown", "object": ""}
     return {"action": "fetch", "object": label}
 
 
 def result_class(result: dict[str, str] | None) -> str:
     if result is None:
         return "error"
-    return "unknown" if result.get("object") == "none" else result.get("object", "error")
+    return "unknown" if result.get("object") == "" else result.get("object", "error")
 
 
 def print_summary(
